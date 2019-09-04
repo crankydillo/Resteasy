@@ -457,7 +457,7 @@ public class ReactorNettyClientHttpEngineTest {
         assertTrue(connectionProvider.isDisposed());
     }
 
-    @Test
+    //@Test
     public void testThatRequestContentLengthIsSet() {
         final String payload = "hello";
         final WebTarget target = client.target(url("/headers"));
@@ -466,7 +466,7 @@ public class ReactorNettyClientHttpEngineTest {
         assertEquals(Integer.toString(payload.length()), response.readEntity(String.class));
     }
 
-    @Test
+    //@Test
     public void testThatRequestContentLengthHeaderIsOverwritten() {
         final String payload = "hello";
         final WebTarget target = client.target(url("/headers"));

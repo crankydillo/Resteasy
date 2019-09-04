@@ -1,5 +1,9 @@
 package org.jboss.resteasy.client.jaxrs.engines;
 
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufOutputStream;
+import io.netty.buffer.UnpooledByteBufAllocator;
+import io.netty.buffer.UnpooledHeapByteBuf;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.handler.codec.http.HttpMethod;
 import org.jboss.resteasy.client.jaxrs.internal.ClientConfiguration;
@@ -7,10 +11,13 @@ import org.jboss.resteasy.client.jaxrs.internal.ClientInvocation;
 import org.jboss.resteasy.client.jaxrs.internal.ClientRequestHeaders;
 import org.jboss.resteasy.client.jaxrs.internal.ClientResponse;
 import org.jboss.resteasy.tracing.RESTEasyTracingLogger;
+import org.reactivestreams.Publisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Mono;
+import reactor.netty.NettyOutbound;
 import reactor.netty.http.client.HttpClient;
+import reactor.netty.http.client.HttpClientRequest;
 import reactor.netty.http.client.HttpClientResponse;
 import reactor.netty.resources.ConnectionProvider;
 
@@ -26,6 +33,8 @@ import javax.ws.rs.core.Response;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.PipedInputStream;
+import java.io.PipedOutputStream;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
@@ -33,6 +42,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.function.BiFunction;
 
 import static java.util.Objects.requireNonNull;
 import static org.jboss.resteasy.util.HttpHeaderNames.CONTENT_LENGTH;
@@ -106,9 +116,6 @@ public class ReactorNettyClientHttpEngine implements AsyncClientHttpEngine {
                                            final ResultExtractor<T> extractor,
                                            final ExecutorService executorService) {
 
-        final Optional<byte[]> payload =
-            Optional.ofNullable(request.getEntity()).map(entity -> requestContent(request));
-
         final HttpClient.RequestSender requestSender =
                 httpClient
                         .headers(headerBuilder -> {
@@ -118,28 +125,25 @@ public class ReactorNettyClientHttpEngine implements AsyncClientHttpEngine {
                                 final List<Object> valueList = entry.getValue();
                                 valueList.forEach(value -> headerBuilder.add(key, value != null ? value : ""));
                             });
-
-                            payload.ifPresent(bytes -> {
-
-                                headerBuilder.set(CONTENT_LENGTH, bytes.length);
-
-                                if (log.isDebugEnabled() &&
-                                    isContentLengthInvalid(resteasyHeaders.getHeader(CONTENT_LENGTH), bytes)) {
-                                    log.debug("The request's Content-Length header is replaced " +
-                                            " by the size of the byte array computed from the request entity.");
-                                }
-                            });
                         })
                         .request(HttpMethod.valueOf(request.getMethod()))
                         .uri(request.getUri().toString());
 
-        // Please see https://github.com/reactor/reactor-netty/issues/585 to see why
-        // we do not use outbound.sendObject(object) API.
         final HttpClient.ResponseReceiver<?> responseReceiver =
-            payload.<HttpClient.ResponseReceiver<?>>map(bytes -> requestSender.send(
-                (httpClientRequest, outbound) ->
-                    outbound.sendObject(Mono.just(outbound.alloc().buffer().writeBytes(bytes))))
-            ).orElse(requestSender);
+            Optional.ofNullable(request.getEntity()).<HttpClient.ResponseReceiver<?>>map(ignore -> {
+                return requestSender.send(
+                    (httpClientRequest, outbound) -> {
+                        final ByteBuf outBuf = outbound.alloc().buffer();
+                        ByteBufOutputStream out = new ByteBufOutputStream(outBuf); // TODO need to close?
+                        request.getDelegatingOutputStream().setDelegate(out);
+                        try {
+                            request.writeRequestBody(out);
+                        } catch (IOException e) {
+                            throw new RuntimeException(e); // TODO deal with this
+                        }
+                        return outbound.sendObject(Mono.just(outBuf));
+                    });
+            }).orElse(requestSender);
 
         final Mono<T> responseMono =  responseReceiver
                 .responseSingle((response, bytes) -> bytes
@@ -155,7 +159,7 @@ public class ReactorNettyClientHttpEngine implements AsyncClientHttpEngine {
                                                         extractor)))));
 
         return requestTimeout
-                .map(duration -> responseMono.timeout(duration))
+                .map(responseMono::timeout)
                 .orElse(responseMono)
                 .toFuture();
     }
@@ -222,19 +226,6 @@ public class ReactorNettyClientHttpEngine implements AsyncClientHttpEngine {
             ret = new ProcessingException(ex);
         }
         return ret;
-    }
-
-    private static byte[] requestContent(ClientInvocation request)
-    {
-        final ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        request.getDelegatingOutputStream().setDelegate(baos);
-        try {
-            request.writeRequestBody(request.getEntityStream());
-            baos.close();
-            return baos.toByteArray();
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to write the request body!", e);
-        }
     }
 
     private <T> T extractResult(final ClientConfiguration clientConfiguration,
