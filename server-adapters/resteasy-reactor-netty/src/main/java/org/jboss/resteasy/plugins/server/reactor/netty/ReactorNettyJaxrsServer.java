@@ -1,5 +1,6 @@
 package org.jboss.resteasy.plugins.server.netty;
 
+import io.netty.buffer.ByteBufInputStream;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.handler.codec.http.LastHttpContent;
@@ -11,12 +12,14 @@ import org.jboss.resteasy.core.SynchronousDispatcher;
 import org.jboss.resteasy.plugins.server.BaseHttpRequest;
 import org.jboss.resteasy.plugins.server.embedded.EmbeddedJaxrsServer;
 import org.jboss.resteasy.plugins.server.embedded.SecurityDomain;
+import org.jboss.resteasy.reactor.MonoProvider;
 import org.jboss.resteasy.specimpl.MultivaluedMapImpl;
 import org.jboss.resteasy.specimpl.ResteasyHttpHeaders;
 import org.jboss.resteasy.specimpl.ResteasyUriInfo;
 import org.jboss.resteasy.spi.Dispatcher;
 import org.jboss.resteasy.spi.HttpRequest;
 import org.jboss.resteasy.spi.HttpResponse;
+import org.jboss.resteasy.spi.Registry;
 import org.jboss.resteasy.spi.ResteasyAsynchronousContext;
 import org.jboss.resteasy.spi.ResteasyAsynchronousResponse;
 import org.jboss.resteasy.spi.ResteasyDeployment;
@@ -24,7 +27,9 @@ import org.jboss.resteasy.spi.RunnableWithException;
 import org.jboss.resteasy.util.EmbeddedServerHelper;
 import org.jboss.resteasy.util.PortProvider;
 import org.reactivestreams.Publisher;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 import reactor.netty.DisposableServer;
 import reactor.netty.http.server.HttpServer;
 import reactor.netty.http.server.HttpServerRequest;
@@ -32,19 +37,31 @@ import reactor.netty.http.server.HttpServerResponse;
 
 import javax.net.ssl.SSLContext;
 import javax.ws.rs.GET;
+import javax.ws.rs.POST;
 import javax.ws.rs.Path;
 import javax.ws.rs.ServiceUnavailableException;
+import javax.ws.rs.client.Entity;
 import javax.ws.rs.container.AsyncResponse;
+import javax.ws.rs.container.ContainerRequestContext;
+import javax.ws.rs.container.ContainerResponseContext;
+import javax.ws.rs.container.ContainerResponseFilter;
 import javax.ws.rs.core.AbstractMultivaluedMap;
+import javax.ws.rs.core.EntityTag;
 import javax.ws.rs.core.HttpHeaders;
+import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.MultivaluedHashMap;
 import javax.ws.rs.core.MultivaluedMap;
 import javax.ws.rs.core.NewCookie;
 import javax.ws.rs.core.Response;
+import javax.ws.rs.ext.Provider;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.SequenceInputStream;
+import java.nio.ByteBuffer;
+import java.util.Collections;
 import java.util.Date;
 import java.util.Enumeration;
 import java.util.List;
@@ -72,9 +89,22 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
 
    @Path("/foo")
    public static class Foo {
+      @POST
+      public Mono<InputStream> echo(InputStream requestBody) {
+         return Mono.just(requestBody);
+      }
+
       @GET
-      public String get() {
-         return "hello from foo!";
+      public Mono<String> hello() {
+         return Mono.just("Hello from mono!!");
+      }
+   }
+
+   @Provider
+   public static class OutFilter implements ContainerResponseFilter {
+      @Override
+      public void filter(ContainerRequestContext containerRequestContext, ContainerResponseContext containerResponseContext) throws IOException {
+         containerResponseContext.getEntityStream().write("Out filter - ".getBytes());
       }
    }
 
@@ -82,7 +112,10 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
       final ReactorNettyJaxrsServer server = new ReactorNettyJaxrsServer();
       final ResteasyDeployment deployment = new ResteasyDeploymentImpl();
       deployment.start();
-      deployment.getRegistry().addSingletonResource(new Foo());
+      deployment.getDispatcher().getProviderFactory().register(OutFilter.class);
+      deployment.getDispatcher().getProviderFactory().register(MonoProvider.class);
+      final Registry reg = deployment.getRegistry();
+      reg.addSingletonResource(new Foo());
       server.setDeployment(deployment);
       server.setPort(8081);
       server.start();
@@ -129,8 +162,20 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
       Publisher<Void> handle(final HttpServerRequest req, final HttpServerResponse resp) {
          final ResteasyUriInfo info = new ResteasyUriInfo(req.uri(), "/");
          final ResteasyResp resteasyResp = new ResteasyResp(resp);
-         deployment.getDispatcher().invoke(new ResteasyReq(info, req, resteasyResp, (SynchronousDispatcher)deployment.getDispatcher()), resteasyResp);
-         return resp.sendByteArray(Mono.just(resteasyResp.o1.toByteArray()));
+         return req.receive().asInputStream()
+             .collectList()
+             .map(l -> {
+                if (l.isEmpty()) return new ByteArrayInputStream(new byte[] {});
+                if (l.size() == 1) return l.get(0);
+                return new SequenceInputStream(Collections.enumeration(l));
+             })
+             .flatMap(body -> {
+                deployment.getDispatcher().invoke(
+                    new ResteasyReq(info, req, body, resteasyResp, (SynchronousDispatcher) deployment.getDispatcher()),
+                    resteasyResp
+                );
+                return resp.sendByteArray(Mono.just(resteasyResp.o1.toByteArray())).neverComplete();
+             });
       }
    }
 
@@ -196,6 +241,7 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
       public void finish() throws IOException {
          if (out != null)
             out.flush();
+         out.close();
       }
 
       @Override
@@ -205,11 +251,19 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
 
    static class ResteasyReq extends BaseHttpRequest {
       private final HttpServerRequest req;
+      private InputStream in;
       private final NettyExecutionContext executionContext;
 
-      public ResteasyReq(ResteasyUriInfo uri, HttpServerRequest req, ResteasyResp response, SynchronousDispatcher dispatcher) {
+      public ResteasyReq(
+          ResteasyUriInfo uri,
+          HttpServerRequest req,
+          InputStream body,
+          ResteasyResp response,
+          SynchronousDispatcher dispatcher
+      ) {
          super(uri);
          this.req = req;
+         this.in = body;
          this.executionContext = new NettyExecutionContext(this, response, dispatcher);
       }
 
@@ -227,12 +281,14 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
 
       @Override
       public InputStream getInputStream() {
-         return req.receive().asInputStream().blockFirst();
+         //return req.receive().asInputStream().reduce(SequenceInputStream::new).subscribeOn(Schedulers.elastic()).block();
+         //return new ByteArrayInputStream("input".getBytes());
+         return in;
       }
 
       @Override
       public void setInputStream(InputStream stream) {
-
+         this.in = in;
       }
 
       @Override
@@ -356,9 +412,7 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
 
          @Override
          public CompletionStage<Void> executeBlockingIo(RunnableWithException f, boolean hasInterceptors) {
-            if(1 == 2) { // todo
-               //if(!NettyUtil.isIoThread()) {
-               // we're blocking
+            if(1 == 1) { // TODO if(!NettyUtil.isIoThread()) {
                try {
                   f.run();
                } catch (Exception e) {
