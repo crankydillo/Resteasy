@@ -167,9 +167,14 @@ public class ChunkOutputStream extends AsyncOutputStream {
    public CompletionStage<Void> asyncWrite(byte[] bs, int offset, int length)
    {
       if (!started) {
+         started = true;
          response.sendByteArray(out).then(completionMono).then().subscribe();
       }
-      listener.get().data(bs);
+      byte[] bytes = bs;
+      if (offset != 0 || length != bs.length) {
+         bytes = Arrays.copyOfRange(bs, offset, offset + length);
+      }
+      listener.get().data(bytes);
       return CompletableFuture.completedFuture(null);
    }
 }
