@@ -1,36 +1,20 @@
-package org.jboss.resteasy.plugins.server.netty;
+package org.jboss.resteasy.plugins.server.reactor.netty;
 
-import io.netty.buffer.ByteBufInputStream;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.handler.codec.http.LastHttpContent;
-import org.jboss.resteasy.core.AbstractAsynchronousResponse;
-import org.jboss.resteasy.core.AbstractExecutionContext;
-import org.jboss.resteasy.core.ResteasyContext;
 import org.jboss.resteasy.core.ResteasyDeploymentImpl;
 import org.jboss.resteasy.core.SynchronousDispatcher;
-import org.jboss.resteasy.plugins.server.BaseHttpRequest;
 import org.jboss.resteasy.plugins.server.embedded.EmbeddedJaxrsServer;
 import org.jboss.resteasy.plugins.server.embedded.SecurityDomain;
 import org.jboss.resteasy.reactor.MonoProvider;
-import org.jboss.resteasy.specimpl.MultivaluedMapImpl;
-import org.jboss.resteasy.specimpl.ResteasyHttpHeaders;
 import org.jboss.resteasy.specimpl.ResteasyUriInfo;
-import org.jboss.resteasy.spi.Dispatcher;
-import org.jboss.resteasy.spi.HttpRequest;
-import org.jboss.resteasy.spi.HttpResponse;
 import org.jboss.resteasy.spi.Registry;
-import org.jboss.resteasy.spi.ResteasyAsynchronousContext;
-import org.jboss.resteasy.spi.ResteasyAsynchronousResponse;
 import org.jboss.resteasy.spi.ResteasyDeployment;
-import org.jboss.resteasy.spi.RunnableWithException;
 import org.jboss.resteasy.util.EmbeddedServerHelper;
 import org.jboss.resteasy.util.PortProvider;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
 import reactor.netty.DisposableServer;
+import reactor.netty.NettyOutbound;
 import reactor.netty.http.server.HttpServer;
 import reactor.netty.http.server.HttpServerRequest;
 import reactor.netty.http.server.HttpServerResponse;
@@ -39,40 +23,31 @@ import javax.net.ssl.SSLContext;
 import javax.ws.rs.GET;
 import javax.ws.rs.POST;
 import javax.ws.rs.Path;
-import javax.ws.rs.ServiceUnavailableException;
-import javax.ws.rs.client.Entity;
-import javax.ws.rs.container.AsyncResponse;
+import javax.ws.rs.Produces;
+import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.container.ContainerRequestContext;
 import javax.ws.rs.container.ContainerResponseContext;
 import javax.ws.rs.container.ContainerResponseFilter;
-import javax.ws.rs.core.AbstractMultivaluedMap;
-import javax.ws.rs.core.EntityTag;
-import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.MultivaluedHashMap;
-import javax.ws.rs.core.MultivaluedMap;
-import javax.ws.rs.core.NewCookie;
 import javax.ws.rs.core.Response;
+import javax.ws.rs.core.StreamingOutput;
 import javax.ws.rs.ext.Provider;
+import java.io.BufferedOutputStream;
+import java.io.BufferedWriter;
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.io.SequenceInputStream;
-import java.nio.ByteBuffer;
+import java.io.Writer;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
-import java.util.Date;
-import java.util.Enumeration;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionStage;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
-import java.util.function.BiConsumer;
-import java.util.function.BiFunction;
-import java.util.function.Function;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * An HTTP server that sends back the content of the received HTTP request
@@ -90,13 +65,49 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
    @Path("/foo")
    public static class Foo {
       @POST
-      public Mono<InputStream> echo(InputStream requestBody) {
+      public Mono<String> echo(String requestBody) {
          return Mono.just(requestBody);
       }
 
+      @POST
+      @Path("/stream")
+      public Mono<InputStream> echo(InputStream requestBody) {
+         return Mono.just(requestBody);
+         /*
+         StreamingOutput stream = new StreamingOutput() {
+            @Override
+            public void write(OutputStream os) throws IOException, WebApplicationException {
+               try (final OutputStream writer = new BufferedOutputStream(os)) {
+                  final byte[] buf = new byte[5 * 1024];
+                  int len;
+                  while ((len = requestBody.read(buf)) > 0) {
+                     writer.write(buf, 0, len);
+                  }
+                  writer.flush();
+                  requestBody.close();
+               }
+            }
+         };
+         return Response.ok(stream).build();
+          */
+      }
+
+//      @POST
+//      @Path("/bytes")
+//      public Mono<byte[]> echo(byte[] requestBody) {
+//         return Mono.just(requestBody);
+//      }
+
       @GET
+      @Produces(MediaType.TEXT_PLAIN)
       public Mono<String> hello() {
          return Mono.just("Hello from mono!!");
+      }
+
+      @GET
+      @Path("block")
+      public String blockingHello() {
+         return "hi!";
       }
    }
 
@@ -109,10 +120,14 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
    }
 
    public static void main(String[] args) {
+//      System.out.println(Mono.just(42).doOnEach(i -> System.out.println("produced!")).then(Mono.just(24)).block());
+//      if (1 == 1) {
+//         System.exit(42);
+//      }
       final ReactorNettyJaxrsServer server = new ReactorNettyJaxrsServer();
       final ResteasyDeployment deployment = new ResteasyDeploymentImpl();
       deployment.start();
-      deployment.getDispatcher().getProviderFactory().register(OutFilter.class);
+      //deployment.getDispatcher().getProviderFactory().register(OutFilter.class);
       deployment.getDispatcher().getProviderFactory().register(MonoProvider.class);
       final Registry reg = deployment.getRegistry();
       reg.addSingletonResource(new Foo());
@@ -159,9 +174,10 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
    }
 
    class Handler {
+
       Publisher<Void> handle(final HttpServerRequest req, final HttpServerResponse resp) {
          final ResteasyUriInfo info = new ResteasyUriInfo(req.uri(), "/");
-         final ResteasyResp resteasyResp = new ResteasyResp(resp);
+
          return req.receive().asInputStream()
              .collectList()
              .map(l -> {
@@ -170,433 +186,16 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
                 return new SequenceInputStream(Collections.enumeration(l));
              })
              .flatMap(body -> {
+                final Mono<Void> completionMono = Mono.empty();
+                final ReactorNettyHttpResponse resteasyResp = new ReactorNettyHttpResponse(req.method().name(), resp, completionMono);
                 deployment.getDispatcher().invoke(
-                    new ResteasyReq(info, req, body, resteasyResp, (SynchronousDispatcher) deployment.getDispatcher()),
+                    new ReactorNettyHttpRequest(info, req, body, resteasyResp, (SynchronousDispatcher) deployment.getDispatcher()),
                     resteasyResp
                 );
-                return resp.sendByteArray(Mono.just(resteasyResp.o1.toByteArray())).neverComplete();
+                return completionMono.doOnTerminate(() -> {
+                   System.out.println("FINISHED!");
+                });
              });
-      }
-   }
-
-   static class ResteasyResp implements HttpResponse {
-      final HttpServerResponse resp;
-      final ByteArrayOutputStream o1 = new ByteArrayOutputStream();
-      OutputStream out = o1;
-
-      public ResteasyResp(HttpServerResponse resp) {
-         this.resp = resp;
-      }
-
-      @Override
-      public int getStatus() {
-         return resp.status().code();
-      }
-
-      @Override
-      public void setStatus(int status) {
-         resp.status(status);
-      }
-
-      @Override
-      public MultivaluedMap<String, Object> getOutputHeaders() {
-         return new MultivaluedHashMap<>();
-      }
-
-      @Override
-      public OutputStream getOutputStream() throws IOException {
-         return out;
-      }
-
-      @Override
-      public void setOutputStream(OutputStream os) {
-         out = os;
-      }
-
-      @Override
-      public void addNewCookie(NewCookie cookie) {
-
-      }
-
-      @Override
-      public void sendError(int status) throws IOException {
-
-      }
-
-      @Override
-      public void sendError(int status, String message) throws IOException {
-
-      }
-
-      @Override
-      public boolean isCommitted() {
-         return false;
-      }
-
-      @Override
-      public void reset() {
-
-      }
-
-      public void finish() throws IOException {
-         if (out != null)
-            out.flush();
-         out.close();
-      }
-
-      @Override
-      public void flushBuffer() throws IOException {
-      }
-   }
-
-   static class ResteasyReq extends BaseHttpRequest {
-      private final HttpServerRequest req;
-      private InputStream in;
-      private final NettyExecutionContext executionContext;
-
-      public ResteasyReq(
-          ResteasyUriInfo uri,
-          HttpServerRequest req,
-          InputStream body,
-          ResteasyResp response,
-          SynchronousDispatcher dispatcher
-      ) {
-         super(uri);
-         this.req = req;
-         this.in = body;
-         this.executionContext = new NettyExecutionContext(this, response, dispatcher);
-      }
-
-      @Override
-      public HttpHeaders getHttpHeaders() {
-         final MultivaluedMap<String, String> map = new MultivaluedMapImpl<>();
-         req.requestHeaders().forEach(e -> map.putSingle(e.getKey(), e.getValue()));
-         return new ResteasyHttpHeaders(map);
-      }
-
-      @Override
-      public MultivaluedMap<String, String> getMutableHeaders() {
-         return null;
-      }
-
-      @Override
-      public InputStream getInputStream() {
-         //return req.receive().asInputStream().reduce(SequenceInputStream::new).subscribeOn(Schedulers.elastic()).block();
-         //return new ByteArrayInputStream("input".getBytes());
-         return in;
-      }
-
-      @Override
-      public void setInputStream(InputStream stream) {
-         this.in = in;
-      }
-
-      @Override
-      public String getHttpMethod() {
-         return req.method().name();
-      }
-
-      @Override
-      public void setHttpMethod(String method) {
-
-      }
-
-      @Override
-      public Object getAttribute(String attribute) {
-         return null;
-      }
-
-      @Override
-      public void setAttribute(String name, Object value) {
-
-      }
-
-      @Override
-      public void removeAttribute(String name) {
-
-      }
-
-      @Override
-      public Enumeration<String> getAttributeNames() {
-         return null;
-      }
-
-      @Override
-      public ResteasyAsynchronousContext getAsyncContext() {
-         return executionContext;
-      }
-
-      @Override
-      public void forward(String path) {
-
-      }
-
-      @Override
-      public boolean wasForwarded() {
-         return false;
-      }
-
-      @Override
-      public String getRemoteAddress() {
-         return null;
-      }
-
-      @Override
-      public String getRemoteHost() {
-         return null;
-      }
-
-      class NettyExecutionContext extends AbstractExecutionContext {
-         protected final ResteasyReq request;
-         protected final ResteasyResp response;
-         protected volatile boolean done;
-         protected volatile boolean cancelled;
-         protected volatile boolean wasSuspended;
-         protected NettyHttpAsyncResponse asyncResponse;
-
-         NettyExecutionContext(final ResteasyReq request, final ResteasyResp response, final SynchronousDispatcher dispatcher)
-         {
-            super(dispatcher, request, response);
-            this.request = request;
-            this.response = response;
-            this.asyncResponse = new NettyHttpAsyncResponse(dispatcher, request, response);
-         }
-
-         @Override
-         public boolean isSuspended() {
-            return wasSuspended;
-         }
-
-         @Override
-         public ResteasyAsynchronousResponse getAsyncResponse() {
-            return asyncResponse;
-         }
-
-         @Override
-         public ResteasyAsynchronousResponse suspend() throws IllegalStateException {
-            return suspend(-1);
-         }
-
-         @Override
-         public ResteasyAsynchronousResponse suspend(long millis) throws IllegalStateException {
-            return suspend(millis, TimeUnit.MILLISECONDS);
-         }
-
-         @Override
-         public ResteasyAsynchronousResponse suspend(long time, TimeUnit unit) throws IllegalStateException {
-            if (wasSuspended)
-            {
-               throw new IllegalStateException("oh nos!");
-            }
-            wasSuspended = true;
-            return asyncResponse;
-         }
-
-         @Override
-         public void complete() {
-            if (wasSuspended) {
-               asyncResponse.complete();
-            }
-         }
-
-         @Override
-         public CompletionStage<Void> executeAsyncIo(CompletionStage<Void> f) {
-            // check if this CF is already resolved
-            CompletableFuture<Void> ret = f.toCompletableFuture();
-            // if it's not resolved, we may need to suspend
-            if(!ret.isDone() && !isSuspended()) {
-               suspend();
-            }
-            return ret;
-         }
-
-         @Override
-         public CompletionStage<Void> executeBlockingIo(RunnableWithException f, boolean hasInterceptors) {
-            if(1 == 1) { // TODO if(!NettyUtil.isIoThread()) {
-               try {
-                  f.run();
-               } catch (Exception e) {
-                  CompletableFuture<Void> ret = new CompletableFuture<>();
-                  ret.completeExceptionally(e);
-                  return ret;
-               }
-               return CompletableFuture.completedFuture(null);
-            } else if(!hasInterceptors) {
-               Map<Class<?>, Object> context = ResteasyContext.getContextDataMap();
-               // turn any sync request into async
-               if(!isSuspended()) {
-                  suspend();
-               }
-               return CompletableFuture.runAsync(() -> {
-                  try(ResteasyContext.CloseableContext newContext = ResteasyContext.addCloseableContextDataLevel(context)){
-                     f.run();
-                  } catch (RuntimeException e) {
-                     throw e;
-                  } catch (Exception e) {
-                     throw new RuntimeException(e);
-                  }
-               });
-            } else {
-               CompletableFuture<Void> ret = new CompletableFuture<>();
-               ret.completeExceptionally(new RuntimeException("Cannot use blocking IO with interceptors when we're on the IO thread"));
-               return ret;
-            }
-         }
-
-         /**
-          * Netty implementation of {@link AsyncResponse}.
-          *
-          * @author Kristoffer Sjogren
-          */
-         class NettyHttpAsyncResponse extends AbstractAsynchronousResponse {
-            private final Object responseLock = new Object();
-            protected ScheduledFuture timeoutFuture;
-
-            private ResteasyResp nettyResponse;
-            NettyHttpAsyncResponse(final SynchronousDispatcher dispatcher, final ResteasyReq request, final ResteasyResp response) {
-               super(dispatcher, request, response);
-               this.nettyResponse = response;
-            }
-
-            @Override
-            public void initialRequestThreadFinished() {
-               // done
-            }
-
-            @Override
-            public void complete() {
-               synchronized (responseLock)
-               {
-                  if (done) return;
-                  if (cancelled) return;
-                  done = true;
-                  nettyFlush();
-               }
-            }
-
-
-            @Override
-            public boolean resume(Object entity) {
-               synchronized (responseLock)
-               {
-                  if (done) return false;
-                  if (cancelled) return false;
-                  done = true;
-                  return internalResume(entity, t -> nettyFlush());
-               }
-            }
-
-            @Override
-            public boolean resume(Throwable ex) {
-               synchronized (responseLock)
-               {
-                  if (done) return false;
-                  if (cancelled) return false;
-                  done = true;
-                  return internalResume(ex, t -> nettyFlush());
-               }
-            }
-
-            @Override
-            public boolean cancel() {
-               synchronized (responseLock)
-               {
-                  if (cancelled) {
-                     return true;
-                  }
-                  if (done) {
-                     return false;
-                  }
-                  done = true;
-                  cancelled = true;
-                  return internalResume(Response.status(Response.Status.SERVICE_UNAVAILABLE).build(), t -> nettyFlush());
-               }
-            }
-
-            @Override
-            public boolean cancel(int retryAfter) {
-               synchronized (responseLock)
-               {
-                  if (cancelled) return true;
-                  if (done) return false;
-                  done = true;
-                  cancelled = true;
-                  return internalResume(Response.status(Response.Status.SERVICE_UNAVAILABLE).header(HttpHeaders.RETRY_AFTER, retryAfter).build(),
-                      t -> nettyFlush());
-               }
-            }
-
-            protected synchronized void nettyFlush()
-            {
-               //flushed = true;
-               try
-               {
-                  nettyResponse.finish();
-               }
-               catch (IOException e)
-               {
-                  throw new RuntimeException(e);
-               }
-            }
-
-            @Override
-            public boolean cancel(Date retryAfter) {
-               synchronized (responseLock)
-               {
-                  if (cancelled) return true;
-                  if (done) return false;
-                  done = true;
-                  cancelled = true;
-                  return internalResume(Response.status(Response.Status.SERVICE_UNAVAILABLE).header(HttpHeaders.RETRY_AFTER, retryAfter).build(),
-                      t -> nettyFlush());
-               }
-            }
-
-            @Override
-            public boolean isSuspended() {
-               return !done && !cancelled;
-            }
-
-            @Override
-            public boolean isCancelled() {
-               return cancelled;
-            }
-
-            @Override
-            public boolean isDone() {
-               return done;
-            }
-
-            @Override
-            public boolean setTimeout(long time, TimeUnit unit) {
-               synchronized (responseLock)
-               {
-                  if (done || cancelled) return false;
-                  if (timeoutFuture != null  && !timeoutFuture.cancel(false)) {
-                     return false;
-                  }
-                  Runnable task = new Runnable() {
-                     @Override
-                     public void run()
-                     {
-                        handleTimeout();
-                     }
-                  };
-                  timeoutFuture = null;//ctx.executor().schedule(task, time, unit);
-               }
-               return true;
-            }
-
-            protected void handleTimeout()
-            {
-               if (timeoutHandler != null)
-               {
-                  timeoutHandler.handleTimeout(this);
-               }
-               if (done) return;
-               resume(new ServiceUnavailableException());
-            }
-         }
       }
    }
 
