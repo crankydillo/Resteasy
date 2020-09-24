@@ -11,10 +11,12 @@ import org.jboss.resteasy.spi.ResteasyDeployment;
 import org.jboss.resteasy.util.EmbeddedServerHelper;
 import org.jboss.resteasy.util.PortProvider;
 import org.reactivestreams.Publisher;
-import reactor.core.publisher.Flux;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import reactor.blockhound.BlockHound;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.MonoProcessor;
 import reactor.netty.DisposableServer;
-import reactor.netty.NettyOutbound;
 import reactor.netty.http.server.HttpServer;
 import reactor.netty.http.server.HttpServerRequest;
 import reactor.netty.http.server.HttpServerResponse;
@@ -24,43 +26,17 @@ import javax.ws.rs.GET;
 import javax.ws.rs.POST;
 import javax.ws.rs.Path;
 import javax.ws.rs.Produces;
-import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.container.ContainerRequestContext;
 import javax.ws.rs.container.ContainerResponseContext;
 import javax.ws.rs.container.ContainerResponseFilter;
 import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.Response;
-import javax.ws.rs.core.StreamingOutput;
 import javax.ws.rs.ext.Provider;
-import java.io.BufferedOutputStream;
-import java.io.BufferedWriter;
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
-import java.io.OutputStreamWriter;
-import java.io.SequenceInputStream;
-import java.io.Writer;
-import java.time.Duration;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
-/**
- * An HTTP server that sends back the content of the received HTTP request
- * in a pretty plaintext form.
- *
- * @author <a href="http://www.jboss.org/netty/">The Netty Project</a>
- * @author Andy Taylor (andy.taylor@jboss.org)
- * @author <a href="http://gleamynode.net/">Trustin Lee</a>
- * @author Norman Maurer
- * @version $Rev: 2080 $, $Date: 2010-01-26 18:04:19 +0900 (Tue, 26 Jan 2010) $
- */
-public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNettyJaxrsServer>
-{
+public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNettyJaxrsServer> {
+
+   final Logger log = LoggerFactory.getLogger(ReactorNettyJaxrsServer.class);
 
    @Path("/foo")
    public static class Foo {
@@ -73,23 +49,21 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
       @Path("/stream")
       public Mono<InputStream> echo(InputStream requestBody) {
          return Mono.just(requestBody);
-         /*
-         StreamingOutput stream = new StreamingOutput() {
-            @Override
-            public void write(OutputStream os) throws IOException, WebApplicationException {
-               try (final OutputStream writer = new BufferedOutputStream(os)) {
-                  final byte[] buf = new byte[5 * 1024];
-                  int len;
-                  while ((len = requestBody.read(buf)) > 0) {
-                     writer.write(buf, 0, len);
-                  }
-                  writer.flush();
-                  requestBody.close();
-               }
-            }
-         };
-         return Response.ok(stream).build();
-          */
+//         StreamingOutput stream = new StreamingOutput() {
+//            @Override
+//            public void write(OutputStream os) throws IOException, WebApplicationException {
+//               try (final OutputStream writer = new BufferedOutputStream(os)) {
+//                  final byte[] buf = new byte[5 * 1024];
+//                  int len;
+//                  while ((len = requestBody.read(buf)) > 0) {
+//                     writer.write(buf, 0, len);
+//                  }
+//                  writer.flush();
+//                  requestBody.close();
+//               }
+//            }
+//         };
+//         return Response.ok(stream).build();
       }
 
 //      @POST
@@ -120,14 +94,10 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
    }
 
    public static void main(String[] args) {
-//      System.out.println(Mono.just(42).doOnEach(i -> System.out.println("produced!")).then(Mono.just(24)).block());
-//      if (1 == 1) {
-//         System.exit(42);
-//      }
+      BlockHound.install();
       final ReactorNettyJaxrsServer server = new ReactorNettyJaxrsServer();
       final ResteasyDeployment deployment = new ResteasyDeploymentImpl();
       deployment.start();
-      //deployment.getDispatcher().getProviderFactory().register(OutFilter.class);
       deployment.getDispatcher().getProviderFactory().register(MonoProvider.class);
       final Registry reg = deployment.getRegistry();
       reg.addSingletonResource(new Foo());
@@ -142,8 +112,6 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
    protected ResteasyDeployment deployment;
    protected String root = "";
    protected SecurityDomain domain;
-   private int ioWorkerCount = Runtime.getRuntime().availableProcessors() * 2;
-   private int executorThreadCount = 16;
    private SSLContext sslContext;
    private EmbeddedServerHelper serverHelper = new EmbeddedServerHelper();
 
@@ -157,6 +125,7 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
    @SuppressWarnings("unchecked")
    @Override
    public ReactorNettyJaxrsServer start() {
+      log.info("Starting server!");
       serverHelper.checkDeployment(deployment);
 
       final HttpServer svrBuilder = HttpServer.create().port(configuredPort);
@@ -176,25 +145,27 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
    class Handler {
 
       Publisher<Void> handle(final HttpServerRequest req, final HttpServerResponse resp) {
+
+         if (1 == 2) {
+            return resp.send(req.receive().retain());
+         }
+
          final ResteasyUriInfo info = new ResteasyUriInfo(req.uri(), "/");
 
-         return req.receive().asInputStream()
-             .collectList()
-             .map(l -> {
-                if (l.isEmpty()) return new ByteArrayInputStream(new byte[] {});
-                if (l.size() == 1) return l.get(0);
-                return new SequenceInputStream(Collections.enumeration(l));
-             })
+         return req.receive()
+             .aggregate()
+             .asInputStream()
              .flatMap(body -> {
-                final Mono<Void> completionMono = Mono.empty();
-                final ReactorNettyHttpResponse resteasyResp = new ReactorNettyHttpResponse(req.method().name(), resp, completionMono);
+                //return resp.send(Mono.just(body)).then();
+                final MonoProcessor<Void> monoP = MonoProcessor.create();
+                final ReactorNettyHttpResponse resteasyResp = new ReactorNettyHttpResponse(req.method().name(), resp, monoP);
                 deployment.getDispatcher().invoke(
                     new ReactorNettyHttpRequest(info, req, body, resteasyResp, (SynchronousDispatcher) deployment.getDispatcher()),
                     resteasyResp
                 );
-                return completionMono.doOnTerminate(() -> {
-                   System.out.println("FINISHED!");
-                });
+                return monoP;
+             }).doOnTerminate(() -> {
+                //System.out.println("FINISHED!!!!");
              });
       }
    }

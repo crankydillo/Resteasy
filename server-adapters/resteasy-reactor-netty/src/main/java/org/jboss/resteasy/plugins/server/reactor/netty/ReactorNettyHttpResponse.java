@@ -2,34 +2,26 @@ package org.jboss.resteasy.plugins.server.reactor.netty;
 
 import io.netty.handler.codec.http.HttpMethod;
 import org.jboss.resteasy.spi.HttpResponse;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
-import reactor.netty.NettyOutbound;
+import reactor.core.publisher.MonoProcessor;
 import reactor.netty.http.server.HttpServerResponse;
 
 import javax.ws.rs.core.MultivaluedHashMap;
 import javax.ws.rs.core.MultivaluedMap;
 import javax.ws.rs.core.NewCookie;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.util.List;
-import java.util.zip.CheckedOutputStream;
 
 public class ReactorNettyHttpResponse implements HttpResponse {
-    final HttpServerResponse resp;
-    OutputStream out;
-
-    ChunkOutputStream.EventListener listener;
+    private final HttpServerResponse resp;
+    private OutputStream out;
 
     public ReactorNettyHttpResponse(
         final String method,
         HttpServerResponse resp,
-        final Mono<Void> completionMono
+        final MonoProcessor<Void> completionMono
     ) {
         this.resp = resp;
-
-        this.out = (method == null || !method.equals(HttpMethod.HEAD)) ? new ChunkOutputStream(this, completionMono) : null; //[RESTEASY-1627]
+        this.out = (method == null || !method.equals(HttpMethod.HEAD)) ? new ChunkOutputStream(resp, completionMono) : null; //[RESTEASY-1627]
         if (out instanceof ChunkOutputStream) {
             final ChunkOutputStream cout = (ChunkOutputStream)out;
         }

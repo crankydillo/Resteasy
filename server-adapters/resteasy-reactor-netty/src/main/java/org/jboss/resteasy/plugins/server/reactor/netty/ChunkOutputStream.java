@@ -1,54 +1,17 @@
 package org.jboss.resteasy.plugins.server.reactor.netty;
 
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelPromise;
-import io.netty.handler.codec.http.DefaultHttpContent;
-import org.jboss.resteasy.core.SynchronousDispatcher;
 import org.jboss.resteasy.spi.AsyncOutputStream;
-import org.reactivestreams.Publisher;
-import reactor.core.publisher.DirectProcessor;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.FluxSink;
 import reactor.core.publisher.Mono;
-import reactor.core.publisher.SynchronousSink;
-import reactor.netty.DisposableServer;
-import reactor.netty.NettyOutbound;
-import reactor.netty.http.server.HttpServer;
+import reactor.core.publisher.MonoProcessor;
 import reactor.netty.http.server.HttpServerResponse;
 
 import java.io.IOException;
-import java.time.Duration;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.List;
-import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BiFunction;
-import java.util.function.Consumer;
 
-/**
- * Class to help application that are built to write to an
- * OutputStream to chunk the content
- *
- * <pre>
- * {@code
- * DefaultHttpResponse response = new DefaultHttpResponse(HTTP_1_1, OK);
- * HttpHeaders.setTransferEncodingChunked(response);
- * response.headers().set(CONTENT_TYPE, "application/octet-stream");
- * //other headers
- * ctx.write(response);
- * // code of the application that use the ChunkOutputStream
- * // Don't forget to close the ChunkOutputStream after use!
- * ctx.writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT).addListener(ChannelFutureListener.CLOSE);
- * }
- * </pre>
- * @author tbussier
- *
- */
 public class ChunkOutputStream extends AsyncOutputStream {
 
    interface EventListener {
@@ -100,12 +63,11 @@ public class ChunkOutputStream extends AsyncOutputStream {
    }
     */
 
-
    private final HttpServerResponse response;
    private boolean started;
    private final AtomicReference<EventListener> listener = new AtomicReference<>();
 
-   Flux<byte[]> out = Flux.<byte[]>create(sink -> {
+   Flux<byte[]> out = Flux.create(sink -> {
       ChunkOutputStream.EventListener l = new ChunkOutputStream.EventListener() {
          @Override
          public void data(byte[] bs) {
@@ -119,19 +81,18 @@ public class ChunkOutputStream extends AsyncOutputStream {
       listener.set(l);
    });
 
-   private final Mono<Void> completionMono;
-
+   private final MonoProcessor<Void> completionMono;
 
       ChunkOutputStream(
-       final ReactorNettyHttpResponse response,
-       final Mono<Void> completionMono
+       final HttpServerResponse response,
+       final MonoProcessor<Void> completionMono
    ) {
-      this.response = response.resp;
+      this.response = response;
       this.completionMono = completionMono;
    }
 
    @Override
-   public void write(int b) throws IOException {
+   public void write(int b) {
       listener.get().data(new byte[] {(byte)b});
    }
 
@@ -148,7 +109,7 @@ public class ChunkOutputStream extends AsyncOutputStream {
    }
 
    @Override
-   public void write(byte[] bs, int off, int len) throws IOException {
+   public void write(byte[] bs, int off, int len) {
       asyncWrite(bs, off, len);
    }
 
@@ -168,13 +129,13 @@ public class ChunkOutputStream extends AsyncOutputStream {
    {
       if (!started) {
          started = true;
-         response.sendByteArray(out).then(completionMono).then().subscribe();
+         response.sendByteArray(out).subscribe(completionMono);
       }
       byte[] bytes = bs;
       if (offset != 0 || length != bs.length) {
          bytes = Arrays.copyOfRange(bs, offset, offset + length);
       }
       listener.get().data(bytes);
-      return CompletableFuture.completedFuture(null);
+      return Mono.empty().then().toFuture();
    }
 }

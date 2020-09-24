@@ -60,8 +60,6 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
 
     @Override
     public InputStream getInputStream() {
-        //return req.receive().asInputStream().reduce(SequenceInputStream::new).subscribeOn(Schedulers.elastic()).block();
-        //return new ByteArrayInputStream("input".getBytes());
         return in;
     }
 
