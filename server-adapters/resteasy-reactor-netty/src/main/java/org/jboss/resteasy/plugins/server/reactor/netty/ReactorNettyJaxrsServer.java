@@ -26,17 +26,31 @@ import javax.ws.rs.GET;
 import javax.ws.rs.POST;
 import javax.ws.rs.Path;
 import javax.ws.rs.Produces;
+import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.container.ContainerRequestContext;
 import javax.ws.rs.container.ContainerResponseContext;
 import javax.ws.rs.container.ContainerResponseFilter;
 import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
+import javax.ws.rs.core.StreamingOutput;
 import javax.ws.rs.ext.Provider;
+
+import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 
 public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNettyJaxrsServer> {
 
    final Logger log = LoggerFactory.getLogger(ReactorNettyJaxrsServer.class);
+
+   @Path("/nobody")
+   public static class NoBody {
+      @GET
+      public Response get() {
+         return Response.status(205).build();
+      }
+   }
 
    @Path("/foo")
    public static class Foo {
@@ -47,23 +61,23 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
 
       @POST
       @Path("/stream")
-      public Mono<InputStream> echo(InputStream requestBody) {
-         return Mono.just(requestBody);
-//         StreamingOutput stream = new StreamingOutput() {
-//            @Override
-//            public void write(OutputStream os) throws IOException, WebApplicationException {
-//               try (final OutputStream writer = new BufferedOutputStream(os)) {
-//                  final byte[] buf = new byte[5 * 1024];
-//                  int len;
-//                  while ((len = requestBody.read(buf)) > 0) {
-//                     writer.write(buf, 0, len);
-//                  }
-//                  writer.flush();
-//                  requestBody.close();
-//               }
-//            }
-//         };
-//         return Response.ok(stream).build();
+      public Response echo(InputStream requestBody) {
+         //return Mono.just(requestBody);
+         StreamingOutput stream = new StreamingOutput() {
+             @Override
+            public void write(OutputStream os) throws IOException, WebApplicationException {
+               try (final OutputStream writer = new BufferedOutputStream(os)) {
+                  final byte[] buf = new byte[5 * 1024];
+                  int len;
+                  while ((len = requestBody.read(buf)) > 0) {
+                     writer.write(buf, 0, len);
+                  }
+                  writer.flush();
+                  requestBody.close();
+               }
+            }
+         };
+         return Response.ok(stream).build();
       }
 
 //      @POST
@@ -101,6 +115,7 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
       deployment.getDispatcher().getProviderFactory().register(MonoProvider.class);
       final Registry reg = deployment.getRegistry();
       reg.addSingletonResource(new Foo());
+      reg.addSingletonResource(new NoBody());
       server.setDeployment(deployment);
       server.setPort(8081);
       server.start();
@@ -144,6 +159,13 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
 
    class Handler {
 
+      private final Mono<InputStream> empty = Mono.just(new InputStream() {
+         @Override
+         public int read() {
+            return -1;  // end of stream
+         }
+      });
+
       Publisher<Void> handle(final HttpServerRequest req, final HttpServerResponse resp) {
 
          if (1 == 2) {
@@ -155,14 +177,21 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
          return req.receive()
              .aggregate()
              .asInputStream()
+             .switchIfEmpty(empty)
              .flatMap(body -> {
                 //return resp.send(Mono.just(body)).then();
                 final MonoProcessor<Void> monoP = MonoProcessor.create();
                 final ReactorNettyHttpResponse resteasyResp = new ReactorNettyHttpResponse(req.method().name(), resp, monoP);
-                deployment.getDispatcher().invoke(
-                    new ReactorNettyHttpRequest(info, req, body, resteasyResp, (SynchronousDispatcher) deployment.getDispatcher()),
-                    resteasyResp
-                );
+                final ReactorNettyHttpRequest resteasyReq =
+                    new ReactorNettyHttpRequest(info, req, body, resteasyResp, (SynchronousDispatcher) deployment.getDispatcher());
+                deployment.getDispatcher().invoke(resteasyReq, resteasyResp);
+                if (!resteasyReq.getAsyncContext().isSuspended()) {
+                   try {
+                      resteasyResp.finish();
+                   } catch (IOException e) {
+                      throw new RuntimeException(e);
+                   }
+                }
                 return monoP;
              }).doOnTerminate(() -> {
                 //System.out.println("FINISHED!!!!");

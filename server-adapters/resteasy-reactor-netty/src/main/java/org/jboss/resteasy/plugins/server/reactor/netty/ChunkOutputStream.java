@@ -19,50 +19,6 @@ public class ChunkOutputStream extends AsyncOutputStream {
       void finish();
    }
 
-   /*
-   public static void main(String[] args) {
-      final DisposableServer svr = HttpServer.create()
-          .port(7000)
-          .handle((req, resp) -> {
-             final List<EventListener> listeners = new ArrayList<>();
-
-             new Thread() {
-                @Override
-                public void run() {
-                   Flux.range(0, 2000).delayElements(Duration.ofMillis(5))
-                       .doOnNext(i -> {
-                          System.out.println(Thread.currentThread().getName() + " - Event " + i);
-                          listeners.forEach(l -> l.data(i + ""));
-                       })
-                       .subscribe(
-                           i -> {},
-                           Throwable::printStackTrace,
-                           () -> listeners.forEach(EventListener::finish)
-                       );
-                }
-             }.start();
-
-             return resp.sendByteArray(Flux.<byte[]>create(sink -> {
-                listeners.add(new EventListener() {
-                   @Override
-                   public void data(String s) {
-                      System.out.println(Thread.currentThread().getName() + " - Emitting " + s);
-                      sink.next(s.getBytes());
-                   }
-                   @Override
-                   public void finish() {
-                      sink.complete();
-                   }
-                });
-             }).doOnNext(i -> {
-                System.out.println(Thread.currentThread().getName() + " - Emitted " + i);
-             }));
-          }).bindNow();
-
-      svr.onDispose().block();
-   }
-    */
-
    private final HttpServerResponse response;
    private boolean started;
    private final AtomicReference<EventListener> listener = new AtomicReference<>();
@@ -83,7 +39,7 @@ public class ChunkOutputStream extends AsyncOutputStream {
 
    private final MonoProcessor<Void> completionMono;
 
-      ChunkOutputStream(
+   ChunkOutputStream(
        final HttpServerResponse response,
        final MonoProcessor<Void> completionMono
    ) {
@@ -101,6 +57,9 @@ public class ChunkOutputStream extends AsyncOutputStream {
 
    @Override
    public void close() throws IOException {
+      if (!started) {
+         response.send().subscribe(completionMono);
+      }
       final EventListener el = listener.get();
       if (el != null) {
          el.finish();

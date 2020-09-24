@@ -74,7 +74,12 @@ public class ReactorNettyHttpResponse implements HttpResponse {
 
     @Override
     public void reset() {
+        System.out.println("hi2");
+    }
 
+    @Override
+    public void close() throws IOException {
+        System.out.println("hi");
     }
 
     public void finish() throws IOException {
