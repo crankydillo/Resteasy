@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class ChunkOutputStream extends AsyncOutputStream {
@@ -21,10 +22,18 @@ public class ChunkOutputStream extends AsyncOutputStream {
 
    private final HttpServerResponse response;
    private boolean started;
+
+
+   void pt(String msg) {
+      //System.out.println("[" + Thread.currentThread().getName() + "] " + msg);
+   }
+
    private final AtomicReference<EventListener> listener = new AtomicReference<>();
+   private final CompletableFuture<String> sinkCreated = new CompletableFuture<>();
 
    Flux<byte[]> out = Flux.create(sink -> {
-      ChunkOutputStream.EventListener l = new ChunkOutputStream.EventListener() {
+      pt("Setting listener!");
+      listener.set(new ChunkOutputStream.EventListener() {
          @Override
          public void data(byte[] bs) {
             sink.next(bs);
@@ -33,8 +42,8 @@ public class ChunkOutputStream extends AsyncOutputStream {
          public void finish() {
             sink.complete();
          }
-      };
-      listener.set(l);
+      });
+      sinkCreated.complete("");
    });
 
    private final MonoProcessor<Void> completionMono;
@@ -57,9 +66,6 @@ public class ChunkOutputStream extends AsyncOutputStream {
 
    @Override
    public void close() throws IOException {
-      if (!started) {
-         response.send().subscribe(completionMono);
-      }
       final EventListener el = listener.get();
       if (el != null) {
          el.finish();
@@ -84,17 +90,47 @@ public class ChunkOutputStream extends AsyncOutputStream {
    }
 
    @Override
-   public CompletionStage<Void> asyncWrite(byte[] bs, int offset, int length)
-   {
+   public CompletionStage<Void> asyncWrite(final byte[] bs, int offset, int length) {
+      // TODO The big 'known' problem we have is that the 'listener' atomic value is not set
+      // until subscription on 'out'.  These can happen on separate threads (i.e. if
+      // user sets timeout on the Mono in business logic.  I'm still trying to reason
+      // through these things.  Anyhow, ideally, we would set the subscription and establish
+      // out and it's 'feed' (listener value) before we get to this point; however, I have
+      // not found a hook point for that.
+      //
+      // The BIG problem is that the subscription to
+
+      // The code below was just some quick hack to try and solve the problem above.
+      // Another option is to couple with impl details (i.e. caller), but I don't want
+      // to go there yet.
+
+      // For now, I'm going to see what it would be like to change some of the framework
+      // code.
+
+      final CompletableFuture<String> cf2 = new CompletableFuture<>();
       if (!started) {
          started = true;
-         response.sendByteArray(out).subscribe(completionMono);
+         response.sendByteArray(
+             out.map(b -> {
+                cf2.complete("");
+                return b;
+             }).doFinally(s -> cf2.complete(""))
+         ).subscribe(completionMono);
       }
-      byte[] bytes = bs;
-      if (offset != 0 || length != bs.length) {
-         bytes = Arrays.copyOfRange(bs, offset, offset + length);
-      }
-      listener.get().data(bytes);
-      return Mono.empty().then().toFuture();
+
+      pt("returning cf");
+      return Mono.fromFuture(sinkCreated)
+          .map(ignore -> {
+                 pt("Sending data! - " + ignore);
+                 byte[] bytes = bs;
+                 if (offset != 0 || length != bs.length) {
+                    bytes = Arrays.copyOfRange(bs, offset, offset + length);
+                 }
+                 listener.get().data(bytes);
+                 return "";
+              })
+              .flatMap(ignore -> Mono.fromFuture(cf2))
+              .then()
+              .toFuture();
    }
 }

@@ -27,9 +27,11 @@ import javax.ws.rs.POST;
 import javax.ws.rs.Path;
 import javax.ws.rs.Produces;
 import javax.ws.rs.WebApplicationException;
+import javax.ws.rs.container.AsyncResponse;
 import javax.ws.rs.container.ContainerRequestContext;
 import javax.ws.rs.container.ContainerResponseContext;
 import javax.ws.rs.container.ContainerResponseFilter;
+import javax.ws.rs.container.Suspended;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import javax.ws.rs.core.StreamingOutput;
@@ -39,6 +41,8 @@ import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
 
 public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNettyJaxrsServer> {
 
@@ -94,8 +98,18 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
 
       @GET
       @Path("block")
-      public String blockingHello() {
-         return "hi!";
+      public Response blockingHello() {
+         return Response.ok("Hello!").header("Foo", "BAR").build();
+      }
+
+      @GET
+      @Produces("text/plain")
+      @Path("/timeout")
+      public void timeout(@Suspended AsyncResponse resp) {
+         resp.setTimeout(25, TimeUnit.SECONDS);
+         Mono.delay(Duration.ofSeconds(5)).subscribe(
+             ignore -> resp.resume("Should have timed out!")
+         );
       }
    }
 
@@ -193,7 +207,10 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
                    }
                 }
                 return monoP;
-             }).doOnTerminate(() -> {
+             }).doOnError(t -> {
+                resp.sendString(Mono.just(t.getLocalizedMessage()));
+             })
+             .doOnTerminate(() -> {
                 //System.out.println("FINISHED!!!!");
              });
       }

@@ -22,6 +22,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.Date;
 import java.util.Enumeration;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -32,6 +34,7 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
     private final HttpServerRequest req;
     private InputStream in;
     private final NettyExecutionContext executionContext;
+    private final Map<String, Object> attributes = new HashMap<String, Object>();
 
     public ReactorNettyHttpRequest(
         ResteasyUriInfo uri,
@@ -79,23 +82,42 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
     }
 
     @Override
-    public Object getAttribute(String attribute) {
-        return null;
+    public Enumeration<String> getAttributeNames()
+    {
+        Enumeration<String> en = new Enumeration<String>()
+        {
+            private Iterator<String> it = attributes.keySet().iterator();
+            @Override
+            public boolean hasMoreElements()
+            {
+                return it.hasNext();
+            }
+
+            @Override
+            public String nextElement()
+            {
+                return it.next();
+            }
+        };
+        return en;
     }
 
     @Override
-    public void setAttribute(String name, Object value) {
-
+    public Object getAttribute(String attribute)
+    {
+        return attributes.get(attribute);
     }
 
     @Override
-    public void removeAttribute(String name) {
-
+    public void setAttribute(String name, Object value)
+    {
+        attributes.put(name, value);
     }
 
     @Override
-    public Enumeration<String> getAttributeNames() {
-        return null;
+    public void removeAttribute(String name)
+    {
+        attributes.remove(name);
     }
 
     @Override
@@ -305,7 +327,6 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
 
             protected synchronized void nettyFlush()
             {
-                //flushed = true;
                 try
                 {
                     nettyResponse.finish();
