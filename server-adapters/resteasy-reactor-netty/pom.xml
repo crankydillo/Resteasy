@@ -82,6 +82,35 @@
 
     <profiles>
         <profile>
+            <id>run</id>
+            <properties>
+                <enforcer.skip>true</enforcer.skip>
+                <checkstyle.skip>true</checkstyle.skip>
+            </properties>
+            <build>
+                <defaultGoal>exec:exec</defaultGoal>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <configuration>
+                            <executable>java</executable>
+                            <longClasspath>true</longClasspath>
+                            <arguments>
+                                <!--
+                                -->
+                                <argument>-Xmx512m</argument>
+                                <argument>-Dio.netty.leakDetectionLevel=PARANOID</argument>
+                                <argument>-classpath</argument>
+                                <classpath/>
+                                <argument>org.jboss.resteasy.plugins.server.reactor.netty.ReactorNettyJaxrsServer</argument>
+                            </arguments>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
             <id>i18n</id>
             <activation>
                 <property>

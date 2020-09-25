@@ -10,7 +10,8 @@
         <appender-ref ref="STDOUT" />
     </appender>
 
-    <root level="DEBUG">
+    <root level="warn">
         <appender-ref ref="ASYNC" />
     </root>
+    <logger name="org.jboss.resteasy.plugins.server.reactor.netty" level="debug"/>
 </configuration>

@@ -66,22 +66,7 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
       @POST
       @Path("/stream")
       public Response echo(InputStream requestBody) {
-         //return Mono.just(requestBody);
-         StreamingOutput stream = new StreamingOutput() {
-             @Override
-            public void write(OutputStream os) throws IOException, WebApplicationException {
-               try (final OutputStream writer = new BufferedOutputStream(os)) {
-                  final byte[] buf = new byte[5 * 1024];
-                  int len;
-                  while ((len = requestBody.read(buf)) > 0) {
-                     writer.write(buf, 0, len);
-                  }
-                  writer.flush();
-                  requestBody.close();
-               }
-            }
-         };
-         return Response.ok(stream).build();
+         return Response.ok(mkStream(requestBody)).build();
       }
 
 //      @POST
@@ -105,11 +90,30 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
       @GET
       @Produces("text/plain")
       @Path("/timeout")
-      public void timeout(@Suspended AsyncResponse resp) {
-         resp.setTimeout(25, TimeUnit.SECONDS);
-         Mono.delay(Duration.ofSeconds(5)).subscribe(
-             ignore -> resp.resume("Should have timed out!")
-         );
+      public void timeout(
+          final InputStream in,
+          @Suspended final AsyncResponse resp
+      ) {
+         // TODO this timeout stuff is all still to do..
+         resp.setTimeout(2, TimeUnit.NANOSECONDS);
+         //resp.resume(Response.ok(mkStream(in)));
+      }
+
+      private StreamingOutput mkStream(final InputStream in) {
+         return new StreamingOutput() {
+            @Override
+            public void write(OutputStream os) throws IOException, WebApplicationException {
+               try (final OutputStream writer = new BufferedOutputStream(os)) {
+                  final byte[] buf = new byte[5 * 1024];
+                  int len;
+                  while ((len = in.read(buf)) > 0) {
+                     writer.write(buf, 0, len);
+                  }
+                  writer.flush();
+                  in.close();
+               }
+            }
+         };
       }
    }
 

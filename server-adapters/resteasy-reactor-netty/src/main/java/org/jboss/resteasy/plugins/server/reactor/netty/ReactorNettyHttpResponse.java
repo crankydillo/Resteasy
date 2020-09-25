@@ -11,6 +11,7 @@ import javax.ws.rs.core.MultivaluedMap;
 import javax.ws.rs.core.NewCookie;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -193,5 +194,11 @@ public class ReactorNettyHttpResponse implements HttpResponse {
     @Override
     public void flushBuffer() throws IOException {
         out.flush();
+    }
+
+    void setTimeout(final Duration timeout) {
+        if (out instanceof ChunkOutputStream) {
+            ((ChunkOutputStream)out).setTimeout(timeout);
+        }
     }
 }

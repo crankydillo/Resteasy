@@ -11,6 +11,8 @@ import org.jboss.resteasy.specimpl.ResteasyUriInfo;
 import org.jboss.resteasy.spi.ResteasyAsynchronousContext;
 import org.jboss.resteasy.spi.ResteasyAsynchronousResponse;
 import org.jboss.resteasy.spi.RunnableWithException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import reactor.netty.http.server.HttpServerRequest;
 
 import javax.ws.rs.ServiceUnavailableException;
@@ -20,6 +22,7 @@ import javax.ws.rs.core.MultivaluedMap;
 import javax.ws.rs.core.Response;
 import java.io.IOException;
 import java.io.InputStream;
+import java.time.Duration;
 import java.util.Date;
 import java.util.Enumeration;
 import java.util.HashMap;
@@ -31,6 +34,8 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 class ReactorNettyHttpRequest extends BaseHttpRequest {
+    private static final Logger log = LoggerFactory.getLogger(ReactorNettyHttpRequest.class);
+
     private final HttpServerRequest req;
     private InputStream in;
     private final NettyExecutionContext executionContext;
@@ -252,7 +257,11 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
             protected ScheduledFuture timeoutFuture;
 
             private ReactorNettyHttpResponse nettyResponse;
-            NettyHttpAsyncResponse(final SynchronousDispatcher dispatcher, final ReactorNettyHttpRequest request, final ReactorNettyHttpResponse response) {
+            NettyHttpAsyncResponse(
+                final SynchronousDispatcher dispatcher,
+                final ReactorNettyHttpRequest request,
+                final ReactorNettyHttpResponse response
+            ) {
                 super(dispatcher, request, response);
                 this.nettyResponse = response;
             }
@@ -367,20 +376,14 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
 
             @Override
             public boolean setTimeout(long time, TimeUnit unit) {
+                log.debug("Setting timeout");
                 synchronized (responseLock)
                 {
                     if (done || cancelled) return false;
                     if (timeoutFuture != null  && !timeoutFuture.cancel(false)) {
                         return false;
                     }
-                    Runnable task = new Runnable() {
-                        @Override
-                        public void run()
-                        {
-                            handleTimeout();
-                        }
-                    };
-                    timeoutFuture = null;//ctx.executor().schedule(task, time, unit);
+                    nettyResponse.setTimeout(Duration.ofNanos(unit.toNanos(time)));
                 }
                 return true;
             }

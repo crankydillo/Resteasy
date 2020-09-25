@@ -1,38 +1,61 @@
 package org.jboss.resteasy.plugins.server.reactor.netty;
 
 import org.jboss.resteasy.spi.AsyncOutputStream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.MonoProcessor;
+import reactor.netty.NettyOutbound;
 import reactor.netty.http.server.HttpServerResponse;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class ChunkOutputStream extends AsyncOutputStream {
 
-   interface EventListener {
-      void data(byte[] s);
-      void finish();
-   }
+   private static final Logger log = LoggerFactory.getLogger(ChunkOutputStream.class);
 
+   private static final boolean COMPLETED_SIGNAL = true;
+
+   /**
+    * Allows the sending of bytes to the client.
+    */
    private final HttpServerResponse response;
-   private boolean started;
 
+   /**
+    * A signal back to the 'main' Flux that writing bytes back to the client has finished.
+    */
+   private final MonoProcessor<Void> completionMono;
 
-   void pt(String msg) {
-      //System.out.println("[" + Thread.currentThread().getName() + "] " + msg);
-   }
-
+   /**
+    * A sink that will be used to bridge bytes from RestEasy (i.e. this class)
+    * to the `Flux<byte[]>` used in sendByteArray on {@link #response}.
+    */
    private final AtomicReference<EventListener> listener = new AtomicReference<>();
-   private final CompletableFuture<String> sinkCreated = new CompletableFuture<>();
 
-   Flux<byte[]> out = Flux.create(sink -> {
-      pt("Setting listener!");
+   /**
+    * This is used to stop the sending of bytes until the sink and {@link #listener} used
+    * with {@link #out} has been fully established.
+    */
+   private final CompletableFuture<Boolean> sinkCreated = new CompletableFuture<>();
+
+   /**
+    * Indicates we've started sending bytes.
+    */
+   private boolean started; // want to eliminate this
+
+   // TODO The use of this is very questionable!  I'm just throwing
+   // this in at the very end before I try something radically different
+   // for the entire adapter.
+   private Duration timeout;
+
+   private final Flux<byte[]> out = Flux.create(sink -> {
+      log.trace("Establishing sink and listener!");
       listener.set(new ChunkOutputStream.EventListener() {
          @Override
          public void data(byte[] bs) {
@@ -43,10 +66,13 @@ public class ChunkOutputStream extends AsyncOutputStream {
             sink.complete();
          }
       });
-      sinkCreated.complete("");
+      sinkCreated.complete(COMPLETED_SIGNAL);
    });
 
-   private final MonoProcessor<Void> completionMono;
+   interface EventListener {
+      void data(byte[] s);
+      void finish();
+   }
 
    ChunkOutputStream(
        final HttpServerResponse response,
@@ -62,6 +88,7 @@ public class ChunkOutputStream extends AsyncOutputStream {
    }
 
    public void reset() {
+      // TODO
    }
 
    @Override
@@ -80,12 +107,13 @@ public class ChunkOutputStream extends AsyncOutputStream {
 
    @Override
    public void flush() throws IOException {
+      // call async flush?
       super.flush();
    }
 
    @Override
-   public CompletionStage<Void> asyncFlush()
-   {
+   public CompletionStage<Void> asyncFlush() {
+      // TODO
       return CompletableFuture.completedFuture(null);
    }
 
@@ -107,30 +135,37 @@ public class ChunkOutputStream extends AsyncOutputStream {
       // For now, I'm going to see what it would be like to change some of the framework
       // code.
 
-      final CompletableFuture<String> cf2 = new CompletableFuture<>();
+      final CompletableFuture<Boolean> cf2 = new CompletableFuture<>();
       if (!started) {
          started = true;
-         response.sendByteArray(
+         Flux<byte[]> actualOut =
              out.map(b -> {
-                cf2.complete("");
-                return b;
-             }).doFinally(s -> cf2.complete(""))
-         ).subscribe(completionMono);
+                    cf2.complete(COMPLETED_SIGNAL);
+                    return b;
+                 }).doFinally(s -> cf2.complete(COMPLETED_SIGNAL));
+         if (timeout != null) {
+            actualOut = actualOut.timeout(timeout);
+         }
+         response.sendByteArray(actualOut).subscribe(completionMono);
       }
 
-      pt("returning cf");
+      log.trace("returning cf");
       return Mono.fromFuture(sinkCreated)
           .map(ignore -> {
-                 pt("Sending data! - " + ignore);
+                 log.trace("Sending data! - " + ignore);
                  byte[] bytes = bs;
                  if (offset != 0 || length != bs.length) {
                     bytes = Arrays.copyOfRange(bs, offset, offset + length);
                  }
                  listener.get().data(bytes);
-                 return "";
+                 return ignore;
               })
               .flatMap(ignore -> Mono.fromFuture(cf2))
               .then()
               .toFuture();
+   }
+
+   public void setTimeout(final Duration timeout) {
+      this.timeout = timeout;
    }
 }
