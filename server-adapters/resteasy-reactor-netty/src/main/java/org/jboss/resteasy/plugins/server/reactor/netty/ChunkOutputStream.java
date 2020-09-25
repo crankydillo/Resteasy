@@ -135,14 +135,14 @@ public class ChunkOutputStream extends AsyncOutputStream {
       // For now, I'm going to see what it would be like to change some of the framework
       // code.
 
-      final CompletableFuture<Boolean> cf2 = new CompletableFuture<>();
+      final CompletableFuture<Boolean> cf = new CompletableFuture<>();
       if (!started) {
          started = true;
          Flux<byte[]> actualOut =
              out.map(b -> {
-                    cf2.complete(COMPLETED_SIGNAL);
+                    cf.complete(COMPLETED_SIGNAL);
                     return b;
-                 }).doFinally(s -> cf2.complete(COMPLETED_SIGNAL));
+                }).doFinally(s -> cf.complete(COMPLETED_SIGNAL));
          if (timeout != null) {
             actualOut = actualOut.timeout(timeout);
          }
@@ -160,7 +160,7 @@ public class ChunkOutputStream extends AsyncOutputStream {
                  listener.get().data(bytes);
                  return ignore;
               })
-              .flatMap(ignore -> Mono.fromFuture(cf2))
+              .flatMap(ignore -> Mono.fromFuture(cf))
               .then()
               .toFuture();
    }

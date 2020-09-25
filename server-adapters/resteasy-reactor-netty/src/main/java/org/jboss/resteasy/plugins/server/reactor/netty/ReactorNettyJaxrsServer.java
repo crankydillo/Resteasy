@@ -88,7 +88,6 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
       }
 
       @GET
-      @Produces("text/plain")
       @Path("/timeout")
       public void timeout(
           final InputStream in,
@@ -97,6 +96,24 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
          // TODO this timeout stuff is all still to do..
          resp.setTimeout(2, TimeUnit.NANOSECONDS);
          //resp.resume(Response.ok(mkStream(in)));
+      }
+
+      @GET
+      @Path("/timeout/mono")
+      public Mono monoTimeout() {
+         return Mono.just(1)
+             .delayElement(Duration.ofSeconds(5))
+             .timeout(Duration.ofNanos(2));
+      }
+
+      @GET
+      @Produces("text/plain")
+      @Path("/err")
+      public String err() {
+         if (1 == 1) {
+            throw new RuntimeException("oh nos!");
+         }
+         return "shouldn't get here!";
       }
 
       private StreamingOutput mkStream(final InputStream in) {
@@ -192,13 +209,19 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
 
          final ResteasyUriInfo info = new ResteasyUriInfo(req.uri(), "/");
 
+         // aggregate (and maybe? asInputStream) reads the entire request body into memory (direct?)
+         // Can we stream it in some way?
+         // https://stackoverflow.com/a/51801335/2071683 but requires a thread.  Isn't using a thread
+         // per request even if from the elastic pool a big problem???  I mean we are trying to reduce
+         // threads!
+         // I honestly don't know what netty is doing here.  When I try to send a large body it says
+         // "request payload too large".  I don't know if that's configurable or not..
+         final MonoProcessor<Void> monoP = MonoProcessor.create();
          return req.receive()
              .aggregate()
              .asInputStream()
              .switchIfEmpty(empty)
              .flatMap(body -> {
-                //return resp.send(Mono.just(body)).then();
-                final MonoProcessor<Void> monoP = MonoProcessor.create();
                 final ReactorNettyHttpResponse resteasyResp = new ReactorNettyHttpResponse(req.method().name(), resp, monoP);
                 final ReactorNettyHttpRequest resteasyReq =
                     new ReactorNettyHttpRequest(info, req, body, resteasyResp, (SynchronousDispatcher) deployment.getDispatcher());
@@ -211,11 +234,12 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
                    }
                 }
                 return monoP;
-             }).doOnError(t -> {
-                resp.sendString(Mono.just(t.getLocalizedMessage()));
+             }).onErrorResume(t -> {
+                resp.status(500).sendString(Mono.just(t.getLocalizedMessage())).subscribe(monoP);
+                return monoP;
              })
-             .doOnTerminate(() -> {
-                //System.out.println("FINISHED!!!!");
+             .doFinally(s -> {
+                log.info("Finally - " + s);
              });
       }
    }

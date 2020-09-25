@@ -3,10 +3,10 @@ package org.jboss.resteasy.plugins.server.reactor.netty;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
 import org.jboss.resteasy.spi.HttpResponse;
+import reactor.core.publisher.Mono;
 import reactor.core.publisher.MonoProcessor;
 import reactor.netty.http.server.HttpServerResponse;
 
-import javax.ws.rs.core.MultivaluedHashMap;
 import javax.ws.rs.core.MultivaluedMap;
 import javax.ws.rs.core.NewCookie;
 import java.io.IOException;
@@ -20,6 +20,7 @@ import java.util.Set;
 public class ReactorNettyHttpResponse implements HttpResponse {
     private final HttpServerResponse resp;
     private OutputStream out;
+    private final MonoProcessor<Void> completionMono;
 
     public ReactorNettyHttpResponse(
         final String method,
@@ -27,6 +28,7 @@ public class ReactorNettyHttpResponse implements HttpResponse {
         final MonoProcessor<Void> completionMono
     ) {
         this.resp = resp;
+        this.completionMono = completionMono;
         this.out = (method == null || !method.equals(HttpMethod.HEAD)) ? new ChunkOutputStream(resp, completionMono) : null; //[RESTEASY-1627]
         if (out instanceof ChunkOutputStream) {
             final ChunkOutputStream cout = (ChunkOutputStream)out;
@@ -161,13 +163,13 @@ public class ReactorNettyHttpResponse implements HttpResponse {
     }
 
     @Override
-    public void sendError(int status) throws IOException {
-
+    public void sendError(int status) {
+        resp.status(status).then().subscribe(completionMono);
     }
 
     @Override
     public void sendError(int status, String message) throws IOException {
-
+        resp.status(status).sendString(Mono.just(message)).then().subscribe(completionMono);
     }
 
     @Override
