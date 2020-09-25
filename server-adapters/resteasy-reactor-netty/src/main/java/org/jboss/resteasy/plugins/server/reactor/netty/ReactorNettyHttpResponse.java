@@ -1,5 +1,7 @@
 package org.jboss.resteasy.plugins.server.reactor.netty;
 
+import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
 import org.jboss.resteasy.spi.HttpResponse;
@@ -164,12 +166,17 @@ public class ReactorNettyHttpResponse implements HttpResponse {
 
     @Override
     public void sendError(int status) {
-        resp.status(status).then().subscribe(completionMono);
+        resp.status(status)
+            .header(HttpHeaderNames.CONTENT_LENGTH, HttpHeaderValues.ZERO)
+            .then().subscribe(completionMono);
     }
 
     @Override
-    public void sendError(int status, String message) throws IOException {
-        resp.status(status).sendString(Mono.just(message)).then().subscribe(completionMono);
+    public void sendError(int status, String message) {
+        resp.status(status)
+            .header(HttpHeaderNames.CONTENT_LENGTH, Integer.toString(message.length()))
+            .header(HttpHeaderNames.CONTENT_TYPE, HttpHeaderValues.TEXT_PLAIN)
+            .sendString(Mono.just(message)).then().subscribe(completionMono);
     }
 
     @Override
