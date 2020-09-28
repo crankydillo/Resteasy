@@ -59,11 +59,12 @@ public class ChunkOutputStream extends AsyncOutputStream {
       listener.set(new ChunkOutputStream.EventListener() {
          @Override
          public void data(byte[] bs) {
-            sink.next(bs);
+             log.trace("Sending some data!");
+             sink.next(bs);
          }
          @Override
          public void finish() {
-            sink.complete();
+             sink.complete();
          }
       });
       sinkCreated.complete(COMPLETED_SIGNAL);
@@ -119,22 +120,6 @@ public class ChunkOutputStream extends AsyncOutputStream {
 
    @Override
    public CompletionStage<Void> asyncWrite(final byte[] bs, int offset, int length) {
-      // TODO The big 'known' problem we have is that the 'listener' atomic value is not set
-      // until subscription on 'out'.  These can happen on separate threads (i.e. if
-      // user sets timeout on the Mono in business logic.  I'm still trying to reason
-      // through these things.  Anyhow, ideally, we would set the subscription and establish
-      // out and it's 'feed' (listener value) before we get to this point; however, I have
-      // not found a hook point for that.
-      //
-      // The BIG problem is that the subscription to
-
-      // The code below was just some quick hack to try and solve the problem above.
-      // Another option is to couple with impl details (i.e. caller), but I don't want
-      // to go there yet.
-
-      // For now, I'm going to see what it would be like to change some of the framework
-      // code.
-
       final CompletableFuture<Boolean> cf = new CompletableFuture<>();
       if (!started) {
          started = true;
@@ -149,10 +134,8 @@ public class ChunkOutputStream extends AsyncOutputStream {
          response.sendByteArray(actualOut).subscribe(completionMono);
       }
 
-      log.trace("returning cf");
       return Mono.fromFuture(sinkCreated)
           .map(ignore -> {
-                 log.trace("Sending data! - " + ignore);
                  byte[] bytes = bs;
                  if (offset != 0 || length != bs.length) {
                     bytes = Arrays.copyOfRange(bs, offset, offset + length);
@@ -165,7 +148,7 @@ public class ChunkOutputStream extends AsyncOutputStream {
               .toFuture();
    }
 
-   public void setTimeout(final Duration timeout) {
+   void setTimeout(final Duration timeout) {
       this.timeout = timeout;
    }
 }

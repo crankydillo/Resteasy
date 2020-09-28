@@ -32,9 +32,6 @@ public class ReactorNettyHttpResponse implements HttpResponse {
         this.resp = resp;
         this.completionMono = completionMono;
         this.out = (method == null || !method.equals(HttpMethod.HEAD)) ? new ChunkOutputStream(resp, completionMono) : null; //[RESTEASY-1627]
-        if (out instanceof ChunkOutputStream) {
-            final ChunkOutputStream cout = (ChunkOutputStream)out;
-        }
     }
 
     @Override
