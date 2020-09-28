@@ -3,7 +3,6 @@ package adhoc;
 import org.jboss.resteasy.plugins.server.netty.NettyContainer;
 import org.jboss.resteasy.spi.Registry;
 import org.jboss.resteasy.spi.ResteasyDeployment;
-import org.jboss.resteasy.util.PortProvider;
 import org.resteasy.adapter.test.resource.Simple;
 import org.resteasy.adapter.test.resource.Streaming;
 
@@ -13,7 +12,7 @@ import reactor.blockhound.BlockHound;
 public class Server {
     public static void main(final String[] args) throws Exception {
         BlockHound.install();
-        System.setProperty("org.jboss.resteasy.port", "8081");
+        System.setProperty("org.jboss.resteasy.port", "8082");
         final ResteasyDeployment deployment = NettyContainer.start();
         deployment.start();
         //deployment.getDispatcher().getProviderFactory().register(OutFilter.class);
