@@ -14,6 +14,7 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class ChunkOutputStream extends AsyncOutputStream {
@@ -103,7 +104,14 @@ public class ChunkOutputStream extends AsyncOutputStream {
 
    @Override
    public void write(byte[] bs, int off, int len) {
-      asyncWrite(bs, off, len);
+       try {
+           asyncWrite(bs, off, len).get();
+       } catch (final InterruptedException ie) {
+           Thread.currentThread().interrupt();
+           throw new RuntimeException(ie);
+       } catch (final ExecutionException ee) {
+           throw new RuntimeException(ee);
+       }
    }
 
    @Override
@@ -119,7 +127,7 @@ public class ChunkOutputStream extends AsyncOutputStream {
    }
 
    @Override
-   public CompletionStage<Void> asyncWrite(final byte[] bs, int offset, int length) {
+   public CompletableFuture<Void> asyncWrite(final byte[] bs, int offset, int length) {
       final CompletableFuture<Boolean> cf = new CompletableFuture<>();
       if (!started) {
          started = true;

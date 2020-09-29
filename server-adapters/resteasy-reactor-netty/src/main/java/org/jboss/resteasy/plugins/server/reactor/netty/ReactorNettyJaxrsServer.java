@@ -72,11 +72,6 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
       });
 
       Publisher<Void> handle(final HttpServerRequest req, final HttpServerResponse resp) {
-
-         if (1 == 2) {
-            return resp.send(req.receive().retain());
-         }
-
          final ResteasyUriInfo info = new ResteasyUriInfo(req.uri(), "/");
 
          // aggregate (and maybe? asInputStream) reads the entire request body into memory (direct?)
