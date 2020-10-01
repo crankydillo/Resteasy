@@ -6,7 +6,6 @@ import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.MonoProcessor;
-import reactor.netty.NettyOutbound;
 import reactor.netty.http.server.HttpServerResponse;
 
 import java.io.IOException;
@@ -17,6 +16,13 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
 
+/**
+ * This is the output stream leveraged by {@link
+ * ReactorNettyHttpResponse#getOutputStream}.  It provides the heavy lifting
+ * for actually transfering the bytes written by RestEasy to a {@link
+ * Flux<byte[]>}, which is what reactor-netty works with.  Most of the heavy
+ * lifting occurs in {@link #asyncWrite(byte[], int, int)}.
+ */
 public class ChunkOutputStream extends AsyncOutputStream {
 
    private static final Logger log = LoggerFactory.getLogger(ChunkOutputStream.class);
@@ -55,6 +61,9 @@ public class ChunkOutputStream extends AsyncOutputStream {
    // for the entire adapter.
    private Duration timeout;
 
+   /**
+    * The {@link Flux<byte[]>} that is fed into {@link HttpServerResponse#sendByteArray}.
+    */
    private final Flux<byte[]> out = Flux.create(sink -> {
       log.trace("Establishing sink and listener!");
       listener.set(new ChunkOutputStream.EventListener() {
@@ -71,6 +80,11 @@ public class ChunkOutputStream extends AsyncOutputStream {
       sinkCreated.complete(COMPLETED_SIGNAL);
    });
 
+   /**
+    * The interface used to transfer data from an eventing API (i.e. {@link
+    * #asyncWrite}) to a {@link Flux} ({@link #out} in this case).  See
+    * documentation around {@link Flux#create} for more information on this.
+    */
    interface EventListener {
       void data(byte[] s);
       void finish();

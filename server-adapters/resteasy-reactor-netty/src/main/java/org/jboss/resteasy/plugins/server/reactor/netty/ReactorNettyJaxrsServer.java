@@ -23,6 +23,23 @@ import javax.net.ssl.SSLContext;
 import java.io.IOException;
 import java.io.InputStream;
 
+/**
+ * A server adapter built on top of <a
+ * href='https://github.com/reactor/reactor-netty'>reactor-netty</a>.  Similar
+ * to the adapter built on top of netty4, this adapter will ultimately run on
+ * Netty rails.  Leveraging reactor-netty brings 2 main benefits, which are:
+ *
+ * 1. Reactor-netty's HttpServer + handle(req, resp) API is a little closer
+ * match to how a normal HTTP server works.  Basically, it should be easier for
+ * an HTTP web server person to maintain compared to a raw Netty
+ * implementation.  However, this assumes you don't have to delve into
+ * reactor-netty!
+ * 2. Reactor-netty puts a <a href='https://projectreactor.io/'>reactor</a>
+ * facade on top of Netty.  The Observable+Iterable programming paradigm is
+ * more general purpose than Netty's IO-centric Channel concept.  In theory, it
+ * should be more beneficial to learn:)
+ *
+ */
 public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNettyJaxrsServer> {
 
    final Logger log = LoggerFactory.getLogger(ReactorNettyJaxrsServer.class);
@@ -81,27 +98,37 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
          // threads!
          // I honestly don't know what netty is doing here.  When I try to send a large body it says
          // "request payload too large".  I don't know if that's configurable or not..
-         final MonoProcessor<Void> monoP = MonoProcessor.create();
+        
+
+         // This is a subscription tied to the completion writing the response.
+         final MonoProcessor<Void> completionMono = MonoProcessor.create();
+
          return req.receive()
              .aggregate()
              .asInputStream()
              .switchIfEmpty(empty)
              .flatMap(body -> {
-                final ReactorNettyHttpResponse resteasyResp = new ReactorNettyHttpResponse(req.method().name(), resp, monoP);
-                final ReactorNettyHttpRequest resteasyReq =
-                    new ReactorNettyHttpRequest(info, req, body, resteasyResp, (SynchronousDispatcher) deployment.getDispatcher());
-                deployment.getDispatcher().invoke(resteasyReq, resteasyResp);
-                if (!resteasyReq.getAsyncContext().isSuspended()) {
-                   try {
-                      resteasyResp.finish();
-                   } catch (IOException e) {
-                      throw new RuntimeException(e);
-                   }
-                }
-                return monoP;
+                 // These next 2 classes provide the main '1-way bridges' between reactor-netty and RestEasy.
+                 final ReactorNettyHttpResponse resteasyResp =
+                     new ReactorNettyHttpResponse(req.method().name(), resp, completionMono);
+
+                 final ReactorNettyHttpRequest resteasyReq =
+                     new ReactorNettyHttpRequest(info, req, body, resteasyResp, (SynchronousDispatcher) deployment.getDispatcher());
+
+                 // This is what actually kick RestEasy into action.
+                 deployment.getDispatcher().invoke(resteasyReq, resteasyResp);
+
+                 if (!resteasyReq.getAsyncContext().isSuspended()) {
+                     try {
+                         resteasyResp.finish();
+                     } catch (IOException e) {
+                         throw new RuntimeException(e);
+                     }
+                 }
+                 return completionMono;
              }).onErrorResume(t -> {
-                resp.status(500).sendString(Mono.just(t.getLocalizedMessage())).subscribe(monoP);
-                return monoP;
+                resp.status(500).sendString(Mono.just(t.getLocalizedMessage())).subscribe(completionMono);
+                return completionMono;
              });
       }
    }

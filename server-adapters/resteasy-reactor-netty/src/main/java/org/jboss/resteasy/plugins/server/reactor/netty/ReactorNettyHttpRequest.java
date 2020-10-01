@@ -33,6 +33,11 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * This is the 1-way bridge from reactor-netty's {@link HttpServerRequest} and
+ * RestEasy.  Headers come via direct call.  RestEasy will access the request
+ * body via {@link #getInputStream}.
+ */
 class ReactorNettyHttpRequest extends BaseHttpRequest {
     private static final Logger log = LoggerFactory.getLogger(ReactorNettyHttpRequest.class);
 
@@ -63,6 +68,7 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
 
     @Override
     public MultivaluedMap<String, String> getMutableHeaders() {
+        // TODO
         return null;
     }
 
@@ -73,6 +79,7 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
 
     @Override
     public void setInputStream(InputStream stream) {
+        // TODO what is this about?
         this.in = in;
     }
 
@@ -84,6 +91,7 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
     @Override
     public void setHttpMethod(String method) {
 
+        // TODO
     }
 
     @Override
@@ -133,20 +141,24 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
     @Override
     public void forward(String path) {
 
+        // TODO
     }
 
     @Override
     public boolean wasForwarded() {
+        // TODO
         return false;
     }
 
     @Override
     public String getRemoteAddress() {
+        // TODO
         return null;
     }
 
     @Override
     public String getRemoteHost() {
+        // TODO
         return null;
     }
 

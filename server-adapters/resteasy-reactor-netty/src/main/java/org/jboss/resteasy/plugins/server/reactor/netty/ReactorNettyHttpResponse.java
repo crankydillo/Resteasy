@@ -19,6 +19,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+/**
+ * This is the 1-way bridge from RestEasy to reactor-netty's {@link
+ * HttpServerResponse}.  Headers come via direct call.  RestEasy will write the
+ * response body to the output stream it gets from {@link #getOutputStream}.
+ */
 public class ReactorNettyHttpResponse implements HttpResponse {
     private final HttpServerResponse resp;
     private OutputStream out;
@@ -147,18 +152,19 @@ public class ReactorNettyHttpResponse implements HttpResponse {
     }
 
     @Override
-    public OutputStream getOutputStream() throws IOException {
+    public OutputStream getOutputStream() {
         return out;
     }
 
     @Override
     public void setOutputStream(OutputStream os) {
+        // TODO what is this about?
         out = os;
     }
 
     @Override
     public void addNewCookie(NewCookie cookie) {
-
+        // TODO
     }
 
     @Override
@@ -178,17 +184,18 @@ public class ReactorNettyHttpResponse implements HttpResponse {
 
     @Override
     public boolean isCommitted() {
+        // TODO
         return false;
     }
 
     @Override
     public void reset() {
-       // System.out.println("hi2");
+        // TODO
     }
 
     @Override
     public void close() throws IOException {
-        //System.out.println("hi");
+        // TODO
     }
 
     public void finish() throws IOException {
