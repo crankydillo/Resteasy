@@ -89,6 +89,11 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
       });
 
       Publisher<Void> handle(final HttpServerRequest req, final HttpServerResponse resp) {
+
+         if (1 == 2) {
+            return resp.send(req.receive().retain().doOnEach(b -> log.trace("got some bytes!")));
+         }
+
          final ResteasyUriInfo info = new ResteasyUriInfo(req.uri(), "/");
 
          // aggregate (and maybe? asInputStream) reads the entire request body into memory (direct?)
@@ -108,6 +113,7 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
              .asInputStream()
              .switchIfEmpty(empty)
              .flatMap(body -> {
+                log.trace("Body read!");
                  // These next 2 classes provide the main '1-way bridges' between reactor-netty and RestEasy.
                  final ReactorNettyHttpResponse resteasyResp =
                      new ReactorNettyHttpResponse(req.method().name(), resp, completionMono);
@@ -119,17 +125,18 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
                  deployment.getDispatcher().invoke(resteasyReq, resteasyResp);
 
                  if (!resteasyReq.getAsyncContext().isSuspended()) {
+                    log.trace("suspended finish called!");
                      try {
                          resteasyResp.finish();
                      } catch (IOException e) {
                          throw new RuntimeException(e);
                      }
                  }
-                 return completionMono;
+                 return completionMono.doOnCancel(() -> log.trace("Subscription on cancel"));
              }).onErrorResume(t -> {
                 resp.status(500).sendString(Mono.just(t.getLocalizedMessage())).subscribe(completionMono);
                 return completionMono;
-             });
+             }).doFinally(s -> log.trace("Request processing finished with: {}", s));
       }
    }
 

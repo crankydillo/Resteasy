@@ -319,6 +319,7 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
 
             @Override
             public boolean cancel() {
+                log.trace("Cancellation occurred!");
                 synchronized (responseLock)
                 {
                     if (cancelled) {
@@ -335,6 +336,7 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
 
             @Override
             public boolean cancel(int retryAfter) {
+                log.trace("Cancellation occurred!");
                 synchronized (responseLock)
                 {
                     if (cancelled) return true;
@@ -360,6 +362,7 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
 
             @Override
             public boolean cancel(Date retryAfter) {
+                log.trace("Cancellation occurred!");
                 synchronized (responseLock)
                 {
                     if (cancelled) return true;

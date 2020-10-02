@@ -5,6 +5,8 @@ import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
 import org.jboss.resteasy.spi.HttpResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.MonoProcessor;
 import reactor.netty.http.server.HttpServerResponse;
@@ -25,6 +27,8 @@ import java.util.Set;
  * response body to the output stream it gets from {@link #getOutputStream}.
  */
 public class ReactorNettyHttpResponse implements HttpResponse {
+    private static final Logger log = LoggerFactory.getLogger(ReactorNettyHttpResponse.class);
+
     private final HttpServerResponse resp;
     private OutputStream out;
     private final MonoProcessor<Void> completionMono;
@@ -195,7 +199,7 @@ public class ReactorNettyHttpResponse implements HttpResponse {
 
     @Override
     public void close() throws IOException {
-        // TODO
+        out.close();
     }
 
     public void finish() throws IOException {
@@ -206,6 +210,7 @@ public class ReactorNettyHttpResponse implements HttpResponse {
 
     @Override
     public void flushBuffer() throws IOException {
+        log.trace("Flushing response buffer!");
         out.flush();
     }
 
