@@ -79,8 +79,8 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
 
     @Override
     public void setInputStream(InputStream stream) {
-        // TODO what is this about?
-        this.in = in;
+        // I guess this somehow 'wraps' the original InputStream..
+        this.in = stream;
     }
 
     @Override
