@@ -18,11 +18,9 @@ public class Simple {
         return requestBody;
     }
 
+    @GET
     @Path("/no-body")
-    public static class NoBody {
-        @GET
-        public Response get() {
-            return Response.status(204).build();
+    public Response get() {
+        return Response.status(204).build();
         }
-    }
 }

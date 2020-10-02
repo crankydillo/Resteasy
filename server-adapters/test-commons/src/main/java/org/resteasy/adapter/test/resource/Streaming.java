@@ -16,6 +16,13 @@ public class Streaming {
         return Response.ok(mkStream(requestBody)).build();
     }
 
+    @POST
+    @Path("/2")
+    public InputStream echo2(InputStream requestBody) {
+        return requestBody;
+    }
+
+
     private StreamingOutput mkStream(final InputStream in) {
         return new StreamingOutput() {
             @Override
