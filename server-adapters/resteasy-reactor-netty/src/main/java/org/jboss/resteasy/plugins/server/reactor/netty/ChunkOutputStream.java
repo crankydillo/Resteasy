@@ -7,6 +7,8 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.MonoProcessor;
 import reactor.netty.http.server.HttpServerResponse;
+import reactor.util.function.Tuple2;
+import reactor.util.function.Tuples;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -28,6 +30,8 @@ public class ChunkOutputStream extends AsyncOutputStream {
    private static final Logger log = LoggerFactory.getLogger(ChunkOutputStream.class);
 
    private static final boolean COMPLETED_SIGNAL = true;
+
+   private long totalBytesSent;
 
    /**
     * Allows the sending of bytes to the client.
@@ -64,13 +68,15 @@ public class ChunkOutputStream extends AsyncOutputStream {
    /**
     * The {@link Flux<byte[]>} that is fed into {@link HttpServerResponse#sendByteArray}.
     */
-   private final Flux<byte[]> out = Flux.create(sink -> {
+   private Flux<Tuple2<byte[], CompletableFuture<Boolean>>> out = Flux.create(sink -> {
       log.trace("Establishing sink and listener!");
       listener.set(new ChunkOutputStream.EventListener() {
          @Override
-         public void data(byte[] bs) {
-             log.trace("Sending some data!");
-             sink.next(bs);
+         public void data(final byte[] bs, final CompletableFuture<Boolean> demandedSignal) {
+             if (log.isTraceEnabled()) {
+                 log.trace("Sending {} bytes", bs.length);
+             }
+             sink.next(Tuples.of(bs, demandedSignal));
          }
          @Override
          public void finish() {
@@ -86,7 +92,7 @@ public class ChunkOutputStream extends AsyncOutputStream {
     * documentation around {@link Flux#create} for more information on this.
     */
    interface EventListener {
-      void data(byte[] s);
+      void data(byte[] s, CompletableFuture<Boolean> demandedSignal);
       void finish();
    }
 
@@ -100,20 +106,19 @@ public class ChunkOutputStream extends AsyncOutputStream {
 
    @Override
    public void write(int b) {
-      listener.get().data(new byte[] {(byte)b});
-   }
-
-   public void reset() {
-      // TODO
+      listener.get().data(new byte[] {(byte)b}, new CompletableFuture<>());
    }
 
    @Override
    public void close() throws IOException {
-      final EventListener el = listener.get();
-      if (el != null) {
-         el.finish();
-      }
-      super.close();
+       log.trace("Closing the ChunkOutputStream.");
+       final EventListener el = listener.get();
+       if (el != null) {
+           el.finish();
+       } else {
+           Mono.<Void>empty().subscribe(completionMono);
+       }
+       super.close();
    }
 
    @Override
@@ -130,7 +135,7 @@ public class ChunkOutputStream extends AsyncOutputStream {
 
    @Override
    public void flush() throws IOException {
-      // call async flush?
+       log.trace("Flush called on ChunkOutputStream");
       super.flush();
    }
 
@@ -140,34 +145,39 @@ public class ChunkOutputStream extends AsyncOutputStream {
       return CompletableFuture.completedFuture(null);
    }
 
-   @Override
-   public CompletableFuture<Void> asyncWrite(final byte[] bs, int offset, int length) {
-      final CompletableFuture<Boolean> cf = new CompletableFuture<>();
-      if (!started) {
-         started = true;
-         Flux<byte[]> actualOut =
-             out.map(b -> {
-                    cf.complete(COMPLETED_SIGNAL);
-                    return b;
-                }).doFinally(s -> cf.complete(COMPLETED_SIGNAL));
-         if (timeout != null) {
-            actualOut = actualOut.timeout(timeout);
-         }
-         response.sendByteArray(actualOut).subscribe(completionMono);
-      }
 
-      return Mono.fromFuture(sinkCreated)
-          .map(ignore -> {
-                 byte[] bytes = bs;
-                 if (offset != 0 || length != bs.length) {
+    @Override
+   public CompletableFuture<Void> asyncWrite(final byte[] bs, int offset, int length) {
+        if (!started) {
+            started = true;
+            Flux<byte[]> actualOut =
+                out.map(tuple -> {
+                    totalBytesSent += tuple.getT1().length;
+                    log.trace("{} total bytes sent", totalBytesSent);
+                    tuple.getT2().complete(COMPLETED_SIGNAL);
+                    return tuple.getT1();
+                }).doOnRequest(l -> log.trace("{} requested", l));
+            if (timeout != null) {
+                actualOut = actualOut.timeout(timeout);
+            }
+            response
+                .sendByteArray(actualOut)
+                .subscribe(completionMono);
+        }
+
+        final CompletableFuture<Boolean> cf = new CompletableFuture<>();
+        return Mono.fromFuture(sinkCreated)
+            .map(ignore -> {
+                byte[] bytes = bs;
+                if (offset != 0 || length != bs.length) {
                     bytes = Arrays.copyOfRange(bs, offset, offset + length);
-                 }
-                 listener.get().data(bytes);
-                 return ignore;
-              })
-              .flatMap(ignore -> Mono.fromFuture(cf))
-              .then()
-              .toFuture();
+                }
+                listener.get().data(bytes, cf);
+                return ignore;
+            })
+            .flatMap(ignore -> Mono.fromFuture(cf))
+            .then()
+            .toFuture();
    }
 
    void setTimeout(final Duration timeout) {
