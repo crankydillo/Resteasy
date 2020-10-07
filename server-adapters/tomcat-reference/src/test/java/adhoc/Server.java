@@ -3,6 +3,7 @@ package adhoc;
 import org.apache.catalina.Context;
 import org.apache.catalina.startup.Tomcat;
 import org.jboss.resteasy.plugins.server.servlet.HttpServletDispatcher;
+import org.resteasy.adapter.test.resource.Async;
 import org.resteasy.adapter.test.resource.Simple;
 import org.resteasy.adapter.test.resource.Streaming;
 import org.resteasy.adapter.test.resource.Timeout;
