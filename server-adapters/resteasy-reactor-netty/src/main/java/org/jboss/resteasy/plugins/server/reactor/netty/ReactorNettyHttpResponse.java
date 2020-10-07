@@ -20,6 +20,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * This is the 1-way bridge from RestEasy to reactor-netty's {@link
@@ -40,7 +41,9 @@ public class ReactorNettyHttpResponse implements HttpResponse {
     ) {
         this.resp = resp;
         this.completionMono = completionMono;
-        this.out = (method == null || !method.equals(HttpMethod.HEAD)) ? new ChunkOutputStream(resp, completionMono) : null; //[RESTEASY-1627]
+        this.out = (method == null || !method.equals(HttpMethod.HEAD))
+            ? new ChunkOutputStream(resp, completionMono)
+            : null; //[RESTEASY-1627]
     }
 
     @Override
@@ -173,6 +176,7 @@ public class ReactorNettyHttpResponse implements HttpResponse {
 
     @Override
     public void sendError(int status) {
+        log.trace("Sending error");
         resp.status(status)
             .header(HttpHeaderNames.CONTENT_LENGTH, HttpHeaderValues.ZERO)
             .then().subscribe(completionMono);
@@ -180,6 +184,7 @@ public class ReactorNettyHttpResponse implements HttpResponse {
 
     @Override
     public void sendError(int status, String message) {
+        log.trace("Sending error: " + message);
         resp.status(status)
             .header(HttpHeaderNames.CONTENT_LENGTH, Integer.toString(message.length()))
             .header(HttpHeaderNames.CONTENT_TYPE, HttpHeaderValues.TEXT_PLAIN)

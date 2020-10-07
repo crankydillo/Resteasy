@@ -1,5 +1,8 @@
 package org.jboss.resteasy.plugins.server.reactor.netty;
 
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.nio.NioEventLoop;
+import io.netty.channel.nio.NioEventLoopGroup;
 import org.jboss.resteasy.core.ResteasyDeploymentImpl;
 import org.jboss.resteasy.core.SynchronousDispatcher;
 import org.jboss.resteasy.plugins.server.embedded.EmbeddedJaxrsServer;
@@ -14,6 +17,7 @@ import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.MonoProcessor;
 import reactor.netty.DisposableServer;
+import reactor.netty.NettyOutbound;
 import reactor.netty.http.server.HttpServer;
 import reactor.netty.http.server.HttpServerRequest;
 import reactor.netty.http.server.HttpServerResponse;
@@ -27,22 +31,25 @@ import java.io.InputStream;
  * A server adapter built on top of <a
  * href='https://github.com/reactor/reactor-netty'>reactor-netty</a>.  Similar
  * to the adapter built on top of netty4, this adapter will ultimately run on
- * Netty rails.  Leveraging reactor-netty brings 2 main benefits, which are:
+ * Netty rails.  Leveraging reactor-netty brings 3 main benefits, which are:
  *
  * 1. Reactor-netty's HttpServer + handle(req, resp) API is a little closer
  * match to how a normal HTTP server works.  Basically, it should be easier for
  * an HTTP web server person to maintain compared to a raw Netty
  * implementation.  However, this assumes you don't have to delve into
  * reactor-netty!
- * 2. Reactor-netty puts a <a href='https://projectreactor.io/'>reactor</a>
+ * 2. Reactor Netty puts a <a href='https://projectreactor.io/'>reactor</a>
  * facade on top of Netty.  The Observable+Iterable programming paradigm is
  * more general purpose than Netty's IO-centric Channel concept.  In theory, it
  * should be more beneficial to learn:)
+ * 3. When paired with a Netty-based client (e.g. the JAX-RS client powered by
+ * reactor-netty), the threadpool can be efficiently shared between the client
+ * and the server.
  *
  */
 public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNettyJaxrsServer> {
 
-   final Logger log = LoggerFactory.getLogger(ReactorNettyJaxrsServer.class);
+   private static final Logger log = LoggerFactory.getLogger(ReactorNettyJaxrsServer.class);
 
    protected String hostname = null;
    protected int configuredPort = PortProvider.getPort();
@@ -51,7 +58,7 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
    protected String root = "";
    protected SecurityDomain domain;
    private SSLContext sslContext;
-   private EmbeddedServerHelper serverHelper = new EmbeddedServerHelper();
+   private final EmbeddedServerHelper serverHelper = new EmbeddedServerHelper();
 
    private DisposableServer server;
 
@@ -65,7 +72,12 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
       log.info("Starting RestEasy Reactor-based server!");
       serverHelper.checkDeployment(deployment);
 
-      final HttpServer svrBuilder = HttpServer.create().port(configuredPort);
+      //EventLoopGroup eventLoopGroup = new NioEventLoopGroup(1);
+
+      final HttpServer svrBuilder =
+          HttpServer.create()
+              //.tcpConfiguration(tcp -> tcp.runOn(eventLoopGroup))
+              .port(configuredPort);
       if (hostname != null && !hostname.trim().isEmpty()) {
          svrBuilder.host(hostname);
       }
@@ -74,8 +86,6 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
           .handle(handler::handle)
           .bindNow();
       runtimePort = server.port();
-
-      server.onDispose().block();
       return this;
    }
 
@@ -91,7 +101,10 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
       Publisher<Void> handle(final HttpServerRequest req, final HttpServerResponse resp) {
 
          if (1 == 2) {
-            return resp.send(req.receive().retain().doOnEach(b -> log.trace("got some bytes!")));
+            final NettyOutbound o =
+                resp.send(req.receive().retain().doOnEach(b -> log.trace("got some bytes!")));
+            return o.then()
+                .doFinally(s -> log.trace("Request processing finished with: {}", s));
          }
 
          final ResteasyUriInfo info = new ResteasyUriInfo(req.uri(), "/");
@@ -101,8 +114,9 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
          // https://stackoverflow.com/a/51801335/2071683 but requires a thread.  Isn't using a thread
          // per request even if from the elastic pool a big problem???  I mean we are trying to reduce
          // threads!
-         // I honestly don't know what netty is doing here.  When I try to send a large body it says
-         // "request payload too large".  I don't know if that's configurable or not..
+         // I honestly don't know what the Netty4 adapter is doing here.  When
+         // I try to send a large body it says "request payload too large".  I
+         // don't know if that's configurable or not..
         
 
          // This is a subscription tied to the completion writing the response.
@@ -114,12 +128,19 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
              .switchIfEmpty(empty)
              .flatMap(body -> {
                 log.trace("Body read!");
-                 // These next 2 classes provide the main '1-way bridges' between reactor-netty and RestEasy.
-                 final ReactorNettyHttpResponse resteasyResp =
+
+                // These next 2 classes provide the main '1-way bridges' between reactor-netty and RestEasy.
+                final ReactorNettyHttpResponse resteasyResp =
                      new ReactorNettyHttpResponse(req.method().name(), resp, completionMono);
 
                  final ReactorNettyHttpRequest resteasyReq =
-                     new ReactorNettyHttpRequest(info, req, body, resteasyResp, (SynchronousDispatcher) deployment.getDispatcher());
+                     new ReactorNettyHttpRequest(
+                             info,
+                             req,
+                             body,
+                             resteasyResp,
+                             (SynchronousDispatcher) deployment.getDispatcher()
+                     );
 
                  // This is what actually kick RestEasy into action.
                  deployment.getDispatcher().invoke(resteasyReq, resteasyResp);
@@ -132,6 +153,7 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
                          throw new RuntimeException(e);
                      }
                  }
+                 log.trace("Returning completion signal mono from main Flux.");
                  return completionMono.doOnCancel(() -> log.trace("Subscription on cancel"));
              }).onErrorResume(t -> {
                 resp.status(500).sendString(Mono.just(t.getLocalizedMessage())).subscribe(completionMono);

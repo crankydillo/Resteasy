@@ -32,6 +32,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * This is the 1-way bridge from reactor-netty's {@link HttpServerRequest} and
@@ -46,12 +47,13 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
     private final NettyExecutionContext executionContext;
     private final Map<String, Object> attributes = new HashMap<String, Object>();
 
+
     public ReactorNettyHttpRequest(
-        ResteasyUriInfo uri,
-        HttpServerRequest req,
-        InputStream body,
-        ReactorNettyHttpResponse response,
-        SynchronousDispatcher dispatcher
+        final ResteasyUriInfo uri,
+        final HttpServerRequest req,
+        final InputStream body,
+        final ReactorNettyHttpResponse response,
+        final SynchronousDispatcher dispatcher
     ) {
         super(uri);
         this.req = req;

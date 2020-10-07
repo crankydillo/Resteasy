@@ -32,7 +32,8 @@ public class Server {
             return new HashSet<>(Arrays.asList(
                 Simple.class,
                 Streaming.class,
-                Timeout.class
+                Timeout.class,
+                Async.class
             ));
         }
     }

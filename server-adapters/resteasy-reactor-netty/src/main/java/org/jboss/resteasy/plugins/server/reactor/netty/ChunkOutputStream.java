@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.MonoProcessor;
+import reactor.core.scheduler.Schedulers;
 import reactor.netty.http.server.HttpServerResponse;
 import reactor.util.function.Tuple2;
 import reactor.util.function.Tuples;
@@ -39,7 +40,9 @@ public class ChunkOutputStream extends AsyncOutputStream {
    private final HttpServerResponse response;
 
    /**
-    * A signal back to the 'main' Flux that writing bytes back to the client has finished.
+    * A signal back to the 'main' Flux in {@link
+    * ReactorNettyJaxrsServer.Handler#handle(reactor.netty.http.server.HttpServerRequest,
+    * HttpServerResponse)} that writing bytes back to the client has finished.
     */
    private final MonoProcessor<Void> completionMono;
 
@@ -58,7 +61,7 @@ public class ChunkOutputStream extends AsyncOutputStream {
    /**
     * Indicates we've started sending bytes.
     */
-   private boolean started; // want to eliminate this
+   private boolean started;
 
    // TODO The use of this is very questionable!  I'm just throwing
    // this in at the very end before I try something radically different
@@ -152,8 +155,6 @@ public class ChunkOutputStream extends AsyncOutputStream {
             started = true;
             Flux<byte[]> actualOut =
                 out.map(tuple -> {
-                    totalBytesSent += tuple.getT1().length;
-                    log.trace("{} total bytes sent", totalBytesSent);
                     tuple.getT2().complete(COMPLETED_SIGNAL);
                     return tuple.getT1();
                 }).doOnRequest(l -> log.trace("{} requested", l));
@@ -161,8 +162,13 @@ public class ChunkOutputStream extends AsyncOutputStream {
                 actualOut = actualOut.timeout(timeout);
             }
             response
-                .sendByteArray(actualOut)
-                .subscribe(completionMono);
+                .sendByteArray(
+                    actualOut
+                        .doOnNext(bb -> {
+                            totalBytesSent += bb.length;
+                            log.trace("{} total bytes sent", totalBytesSent);
+                        })
+                ).subscribe(completionMono);
         }
 
         final CompletableFuture<Boolean> cf = new CompletableFuture<>();
