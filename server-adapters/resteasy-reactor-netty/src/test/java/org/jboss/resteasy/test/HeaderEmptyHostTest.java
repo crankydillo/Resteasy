@@ -29,7 +29,7 @@ public class HeaderEmptyHostTest
       UriInfo uriInfo;
 
       @GET
-      @Path("/org/jboss/resteasy/test")
+      @Path("/test")
       public String hello()
       {
          return "uriInfo: " + uriInfo.getRequestUri().toString();
