@@ -64,7 +64,7 @@ public class RESTEASY1325Test
    {
    }
 
-   @Test(timeout= IDLE_TIMEOUT_SEC * 1000 + 5000)
+   @Test(timeout= IDLE_TIMEOUT_SEC * 1000 + 1000)
    public void testIdleCloseConnection() throws Exception
    {
       ReactorNettyJaxrsServer netty = new ReactorNettyJaxrsServer();

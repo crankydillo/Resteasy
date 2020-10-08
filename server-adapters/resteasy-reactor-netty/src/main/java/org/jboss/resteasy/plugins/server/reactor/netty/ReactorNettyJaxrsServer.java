@@ -30,6 +30,7 @@ import reactor.netty.NettyOutbound;
 import reactor.netty.http.server.HttpServer;
 import reactor.netty.http.server.HttpServerRequest;
 import reactor.netty.http.server.HttpServerResponse;
+import reactor.netty.tcp.TcpServer;
 
 import javax.net.ssl.SSLContext;
 import javax.ws.rs.core.SecurityContext;
@@ -94,35 +95,20 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
 
       final HttpServer svrBuilder =
           HttpServer.create()
-              .tcpConfiguration(tcp -> {
-                 if (idleTimeout != null) {
-                    return tcp.doOnConnection(conn -> {
-                       final long idleNanos = idleTimeout.toNanos();
-                       conn.channel().pipeline().addFirst("idleStateHandler", new IdleStateHandler(0, 0, idleNanos, TimeUnit.NANOSECONDS));
-                       conn.channel().pipeline().addLast("idleEventHandler", new ChannelDuplexHandler() {
-                          @Override
-                          public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
-                             if (evt instanceof IdleStateEvent) {
-                                IdleStateEvent e = (IdleStateEvent) evt;
-                                if (e.state() == IdleState.READER_IDLE) {
-                                   ctx.close();
-                                }
-                             }
-                          }
-                       });
-                       //conn.channel().pipeline().addFirst("idleStateHandler", new IdleStateHandler(1, 0, idleNanos, TimeUnit.NANOSECONDS));
-                    });
-                 }
-                 return tcp;
-              }).port(configuredPort);
+              .tcpConfiguration(this::configure)
+              .port(configuredPort);
+
       if (hostname != null && !hostname.trim().isEmpty()) {
          svrBuilder.host(hostname);
       }
+
       final Handler handler = new Handler();
+
       server = svrBuilder
           .handle(handler::handle)
           .bindNow();
       runtimePort = server.port();
+
       return this;
    }
 
@@ -309,4 +295,25 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
       return this;
    }
 
+   private TcpServer configure(final TcpServer baseServer) {
+      if (idleTimeout != null) {
+         return baseServer.doOnConnection(conn -> {
+            final long idleNanos = idleTimeout.toNanos();
+            // TODO, why can't I use reactor-netty methods for this??
+            conn.channel().pipeline().addFirst("idleStateHandler", new IdleStateHandler(0, 0, idleNanos, TimeUnit.NANOSECONDS));
+            conn.channel().pipeline().addAfter("idleStateHandler", "idleEventHandler", new ChannelDuplexHandler() {
+               @Override
+               public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
+                  if (evt instanceof IdleStateEvent) {
+                     IdleStateEvent e = (IdleStateEvent) evt;
+                     if (e.state() == IdleState.ALL_IDLE) {
+                        ctx.close();
+                     }
+                  }
+               }
+            });
+         });
+      }
+      return baseServer;
+   }
 }
