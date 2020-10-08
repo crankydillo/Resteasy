@@ -32,7 +32,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * This is the 1-way bridge from reactor-netty's {@link HttpServerRequest} and
@@ -46,7 +47,7 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
     private InputStream in;
     private final NettyExecutionContext executionContext;
     private final Map<String, Object> attributes = new HashMap<String, Object>();
-
+    Duration timeout;
 
     public ReactorNettyHttpRequest(
         final ResteasyUriInfo uri,
@@ -54,10 +55,10 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
         final InputStream body,
         final ReactorNettyHttpResponse response,
         final SynchronousDispatcher dispatcher
-    ) {
+        ) {
         super(uri);
-        this.req = req;
-        this.in = body;
+        this.req = requireNonNull(req);
+        this.in = requireNonNull(body);
         this.executionContext = new NettyExecutionContext(this, response, dispatcher);
     }
 
@@ -92,7 +93,6 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
 
     @Override
     public void setHttpMethod(String method) {
-
         // TODO
     }
 
@@ -142,7 +142,6 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
 
     @Override
     public void forward(String path) {
-
         // TODO
     }
 
@@ -154,14 +153,12 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
 
     @Override
     public String getRemoteAddress() {
-        // TODO
-        return null;
+        return req.remoteAddress().getAddress().getHostAddress();
     }
 
     @Override
     public String getRemoteHost() {
-        // TODO
-        return null;
+        return req.remoteAddress().getHostName();
     }
 
     class NettyExecutionContext extends AbstractExecutionContext {
@@ -230,7 +227,7 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
 
         @Override
         public CompletionStage<Void> executeBlockingIo(RunnableWithException f, boolean hasInterceptors) {
-            if(1 == 1) { // TODO if(!NettyUtil.isIoThread()) {
+            if(!NettyUtil.isIoThread()) {
                 try {
                     f.run();
                 } catch (Exception e) {
@@ -354,7 +351,7 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
             {
                 try
                 {
-                    nettyResponse.finish();
+                    nettyResponse.close();
                 }
                 catch (IOException e)
                 {
@@ -391,6 +388,7 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
                 return done;
             }
 
+
             @Override
             public boolean setTimeout(long time, TimeUnit unit) {
                 log.debug("Setting timeout");
@@ -400,7 +398,7 @@ class ReactorNettyHttpRequest extends BaseHttpRequest {
                     if (timeoutFuture != null  && !timeoutFuture.cancel(false)) {
                         return false;
                     }
-                    nettyResponse.setTimeout(Duration.ofNanos(unit.toNanos(time)));
+                    timeout = Duration.ofNanos(unit.toNanos(time));
                 }
                 return true;
             }

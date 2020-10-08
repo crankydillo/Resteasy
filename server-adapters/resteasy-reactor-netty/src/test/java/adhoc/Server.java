@@ -14,6 +14,7 @@ import org.slf4j.LoggerFactory;
 import reactor.blockhound.BlockHound;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import test.AsyncJaxrsResource;
 
 import javax.ws.rs.DefaultValue;
 import javax.ws.rs.GET;
@@ -46,15 +47,18 @@ public class Server {
                 .block();
 
         @GET
+        @Path("/sse")
+        @Produces(MediaType.SERVER_SENT_EVENTS)
+        public Flux<Integer> sse() {
+            return Flux.range(0, 10).delayElements(Duration.ofSeconds(1));
+        }
+
+        @GET
         public Mono<String> get(
             @QueryParam("delay") @DefaultValue("0") final int delay
         ) {
             return Mono.just(DATA)
                 .delayElement(Duration.ofSeconds(delay));
-
-//            return Flux.range(0, 50_000)
-//                .map(i -> i + ". value")
-                //.delayElements(Duration.ofSeconds(delay));
         }
 
         private void p(Object o) {
@@ -75,11 +79,12 @@ public class Server {
         reg.addSingletonResource(new Timeout());
         reg.addSingletonResource(new Async());
         reg.addSingletonResource(new Reactor());
+        reg.addSingletonResource(new AsyncJaxrsResource());
         reg.addSingletonResource(new MonoRes());
         reg.addSingletonResource(new Block());
         server.setDeployment(deployment);
         server.setPort(8081);
-        server.start();
+        server.startAndBlock();
     }
 
     @Path("/mono")

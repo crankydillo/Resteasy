@@ -1,14 +1,23 @@
 package org.jboss.resteasy.plugins.server.reactor.netty;
 
+import io.netty.channel.ChannelDuplexHandler;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoop;
 import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.handler.timeout.IdleState;
+import io.netty.handler.timeout.IdleStateEvent;
+import io.netty.handler.timeout.IdleStateHandler;
+import org.jboss.resteasy.core.ResteasyContext;
 import org.jboss.resteasy.core.ResteasyDeploymentImpl;
 import org.jboss.resteasy.core.SynchronousDispatcher;
+import org.jboss.resteasy.core.ThreadLocalResteasyProviderFactory;
 import org.jboss.resteasy.plugins.server.embedded.EmbeddedJaxrsServer;
 import org.jboss.resteasy.plugins.server.embedded.SecurityDomain;
 import org.jboss.resteasy.specimpl.ResteasyUriInfo;
 import org.jboss.resteasy.spi.ResteasyDeployment;
+import org.jboss.resteasy.spi.ResteasyProviderFactory;
 import org.jboss.resteasy.util.EmbeddedServerHelper;
 import org.jboss.resteasy.util.PortProvider;
 import org.reactivestreams.Publisher;
@@ -23,9 +32,13 @@ import reactor.netty.http.server.HttpServerRequest;
 import reactor.netty.http.server.HttpServerResponse;
 
 import javax.net.ssl.SSLContext;
+import javax.ws.rs.core.SecurityContext;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * A server adapter built on top of <a
@@ -57,6 +70,7 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
    protected ResteasyDeployment deployment;
    protected String root = "";
    protected SecurityDomain domain;
+   private Duration idleTimeout;
    private SSLContext sslContext;
    private final EmbeddedServerHelper serverHelper = new EmbeddedServerHelper();
 
@@ -73,11 +87,34 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
       serverHelper.checkDeployment(deployment);
 
       //EventLoopGroup eventLoopGroup = new NioEventLoopGroup(1);
+      String appPath = serverHelper.checkAppDeployment(deployment);
+      if (appPath != null && (root == null || "".equals(root))) {
+         setRootResourcePath(appPath);
+      }
 
       final HttpServer svrBuilder =
           HttpServer.create()
-              //.tcpConfiguration(tcp -> tcp.runOn(eventLoopGroup))
-              .port(configuredPort);
+              .tcpConfiguration(tcp -> {
+                 if (idleTimeout != null) {
+                    return tcp.doOnConnection(conn -> {
+                       final long idleNanos = idleTimeout.toNanos();
+                       conn.channel().pipeline().addFirst("idleStateHandler", new IdleStateHandler(0, 0, idleNanos, TimeUnit.NANOSECONDS));
+                       conn.channel().pipeline().addLast("idleEventHandler", new ChannelDuplexHandler() {
+                          @Override
+                          public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
+                             if (evt instanceof IdleStateEvent) {
+                                IdleStateEvent e = (IdleStateEvent) evt;
+                                if (e.state() == IdleState.READER_IDLE) {
+                                   ctx.close();
+                                }
+                             }
+                          }
+                       });
+                       //conn.channel().pipeline().addFirst("idleStateHandler", new IdleStateHandler(1, 0, idleNanos, TimeUnit.NANOSECONDS));
+                    });
+                 }
+                 return tcp;
+              }).port(configuredPort);
       if (hostname != null && !hostname.trim().isEmpty()) {
          svrBuilder.host(hostname);
       }
@@ -87,6 +124,14 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
           .bindNow();
       runtimePort = server.port();
       return this;
+   }
+
+   /**
+    * Calling this method will block the current thread.
+    */
+   public void startAndBlock() {
+       start();
+       server.onDispose().block();
    }
 
    class Handler {
@@ -107,7 +152,7 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
                 .doFinally(s -> log.trace("Request processing finished with: {}", s));
          }
 
-         final ResteasyUriInfo info = new ResteasyUriInfo(req.uri(), "/");
+         final ResteasyUriInfo info = new ResteasyUriInfo(req.uri(), root);
 
          // aggregate (and maybe? asInputStream) reads the entire request body into memory (direct?)
          // Can we stream it in some way?
@@ -128,37 +173,63 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
              .switchIfEmpty(empty)
              .flatMap(body -> {
                 log.trace("Body read!");
+                resp.withConnection(conn -> {
+                   log.trace("{}", conn.channel().id());
+                });
 
                 // These next 2 classes provide the main '1-way bridges' between reactor-netty and RestEasy.
                 final ReactorNettyHttpResponse resteasyResp =
-                     new ReactorNettyHttpResponse(req.method().name(), resp, completionMono);
+                    new ReactorNettyHttpResponse(req.method(), resp, completionMono);
 
-                 final ReactorNettyHttpRequest resteasyReq =
-                     new ReactorNettyHttpRequest(
-                             info,
-                             req,
-                             body,
-                             resteasyResp,
-                             (SynchronousDispatcher) deployment.getDispatcher()
-                     );
+                final ReactorNettyHttpRequest resteasyReq =
+                    new ReactorNettyHttpRequest(
+                        info,
+                        req,
+                        body,
+                        resteasyResp,
+                        (SynchronousDispatcher) deployment.getDispatcher()
+                    );
 
-                 // This is what actually kick RestEasy into action.
-                 deployment.getDispatcher().invoke(resteasyReq, resteasyResp);
+                // This is what actually kick RestEasy into action.
+                ResteasyProviderFactory defaultInstance = ResteasyProviderFactory.getInstance();
+                if (defaultInstance instanceof ThreadLocalResteasyProviderFactory) {
+                   ThreadLocalResteasyProviderFactory.push(deployment.getProviderFactory());
+                }
 
-                 if (!resteasyReq.getAsyncContext().isSuspended()) {
-                    log.trace("suspended finish called!");
-                     try {
-                         resteasyResp.finish();
-                     } catch (IOException e) {
-                         throw new RuntimeException(e);
-                     }
-                 }
-                 log.trace("Returning completion signal mono from main Flux.");
-                 return completionMono.doOnCancel(() -> log.trace("Subscription on cancel"));
+                deployment.getDispatcher().invoke(resteasyReq, resteasyResp);
+
+                if (defaultInstance instanceof ThreadLocalResteasyProviderFactory) {
+                   ThreadLocalResteasyProviderFactory.pop();
+                }
+
+                if (!resteasyReq.getAsyncContext().isSuspended()) {
+                   log.trace("suspended finish called!");
+                   try {
+                      resteasyResp.close();
+                   } catch (IOException e) {
+                      throw new RuntimeException(e);
+                   }
+                }
+
+                final Mono<Void> actualMono =
+                    resteasyReq.timeout != null ? completionMono.timeout(resteasyReq.timeout) : completionMono;
+
+                log.trace("Returning completion signal mono from main Flux.");
+                return actualMono
+                    .doOnCancel(() -> log.trace("Subscription cancelled"))
+                    .doOnSubscribe(s -> log.trace("Subscription on completion mono: {}", s))
+                    .doFinally(s -> log.trace("The completion mono completed with: {}", s));
              }).onErrorResume(t -> {
-                resp.status(500).sendString(Mono.just(t.getLocalizedMessage())).subscribe(completionMono);
+                final Mono<Void> sendMono;
+                if (t instanceof TimeoutException) {
+                   sendMono = resp.status(503).send();
+                } else {
+                   sendMono = resp.status(500).sendString(Mono.just(t.getLocalizedMessage())).then();
+                }
+                sendMono.subscribe(completionMono);
                 return completionMono;
-             }).doFinally(s -> log.trace("Request processing finished with: {}", s));
+             }).doFinally(s -> log.trace("Request processing finished with: {}", s))
+             .doOnSubscribe(s -> log.trace("handle subscription: {}", s));
       }
    }
 
@@ -227,7 +298,10 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
       return this;
    }
 
-
+   public ReactorNettyJaxrsServer setIdleTimeout(final Duration idleTimeout) {
+      this.idleTimeout = idleTimeout;
+      return this;
+   }
 
    public ReactorNettyJaxrsServer setSSLContext(SSLContext sslContext)
    {

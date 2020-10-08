@@ -20,6 +20,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -32,18 +33,23 @@ public class ReactorNettyHttpResponse implements HttpResponse {
 
     private final HttpServerResponse resp;
     private OutputStream out;
+    private boolean committed;
     private final MonoProcessor<Void> completionMono;
 
     public ReactorNettyHttpResponse(
-        final String method,
+        final HttpMethod method,
         HttpServerResponse resp,
         final MonoProcessor<Void> completionMono
     ) {
         this.resp = resp;
         this.completionMono = completionMono;
-        this.out = (method == null || !method.equals(HttpMethod.HEAD))
-            ? new ChunkOutputStream(resp, completionMono)
-            : null; //[RESTEASY-1627]
+        if (method == null || !method.equals(HttpMethod.HEAD)) {
+            this.out = new ChunkOutputStream(this, resp, completionMono);
+        } else {
+            // Not entirely sure this is the best way to handle this..
+            resp.responseHeaders().remove(HttpHeaderNames.TRANSFER_ENCODING);
+            // TODO out is null; //[RESTEASY-1627] check this bug.
+        }
     }
 
     @Override
@@ -170,8 +176,9 @@ public class ReactorNettyHttpResponse implements HttpResponse {
     }
 
     @Override
-    public void addNewCookie(NewCookie cookie) {
-        // TODO
+    public void addNewCookie(NewCookie cookie)
+    {
+        resp.responseHeaders().add(javax.ws.rs.core.HttpHeaders.SET_COOKIE, cookie);
     }
 
     @Override
@@ -180,6 +187,7 @@ public class ReactorNettyHttpResponse implements HttpResponse {
         resp.status(status)
             .header(HttpHeaderNames.CONTENT_LENGTH, HttpHeaderValues.ZERO)
             .then().subscribe(completionMono);
+        committed = true;
     }
 
     @Override
@@ -188,13 +196,19 @@ public class ReactorNettyHttpResponse implements HttpResponse {
         resp.status(status)
             .header(HttpHeaderNames.CONTENT_LENGTH, Integer.toString(message.length()))
             .header(HttpHeaderNames.CONTENT_TYPE, HttpHeaderValues.TEXT_PLAIN)
-            .sendString(Mono.just(message)).then().subscribe(completionMono);
+            .sendString(Mono.just(message))
+            .then()
+            .subscribe(completionMono);
+        committed();
     }
 
     @Override
     public boolean isCommitted() {
-        // TODO
-        return false;
+        return committed;
+    }
+
+    void committed() {
+        committed = true;
     }
 
     @Override
@@ -204,24 +218,17 @@ public class ReactorNettyHttpResponse implements HttpResponse {
 
     @Override
     public void close() throws IOException {
-        out.close();
-    }
-
-    public void finish() throws IOException {
-        if (out != null)
+        if (out != null) {
             out.flush();
-        out.close();
+            out.close();
+        } else {
+            Mono.<Void>empty().subscribe(completionMono);
+        }
     }
 
     @Override
     public void flushBuffer() throws IOException {
         log.trace("Flushing response buffer!");
         out.flush();
-    }
-
-    void setTimeout(final Duration timeout) {
-        if (out instanceof ChunkOutputStream) {
-            ((ChunkOutputStream)out).setTimeout(timeout);
-        }
     }
 }

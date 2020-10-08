@@ -16,6 +16,7 @@ import reactor.util.function.Tuples;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
@@ -32,18 +33,13 @@ public class ChunkOutputStream extends AsyncOutputStream {
 
    private static final Logger log = LoggerFactory.getLogger(ChunkOutputStream.class);
 
-   private long totalBytesSent;
-
-   // TODO The use of this is very questionable!  I'm just throwing
-   // this in at the very end before I try something radically different
-   // for the entire adapter.
-   private Duration timeout;
+   private final ReactorNettyHttpResponse parentResponse;
 
     /**
      * This is the {@link Mono} that we return from
      * {@link ReactorNettyJaxrsServer.Handler#handle(HttpServerRequest, HttpServerResponse)}
      */
-   private MonoProcessor<Void> completionMono;
+   private final MonoProcessor<Void> completionMono;
 
     /**
      * Indicates that we've starting sending the response bytes.
@@ -60,20 +56,31 @@ public class ChunkOutputStream extends AsyncOutputStream {
      */
    private final Supplier<FluxSink<Tuple2<byte[], CompletableFuture<Void>>>> byteSinkSupplier;
 
+   private final HttpServerResponse reactorNettyResponse;
+
    ChunkOutputStream(
-       final HttpServerResponse response,
+       final ReactorNettyHttpResponse parentResponse,
+       final HttpServerResponse reactorNettyResponse,
        final MonoProcessor<Void> completionMono
    ) {
-       this.completionMono = completionMono;
+       this.reactorNettyResponse = reactorNettyResponse;
+       this.parentResponse = Objects.requireNonNull(parentResponse);
+       this.completionMono = Objects.requireNonNull(completionMono);
+       Objects.requireNonNull(reactorNettyResponse);
        this.byteSinkSupplier = () -> {
+           log.trace("Creating FluxSink for output.");
            final EmitterProcessor<Tuple2<byte[], CompletableFuture<Void>>> bytesEmitter = EmitterProcessor.create();
-           final Flux<byte[]> out = bytesEmitter.map(tup -> {
+           final Flux<byte[]> byteFlux = bytesEmitter.map(tup -> {
                    log.trace("Submitting bytes to downstream");
                    tup.getT2().complete(null);
                    return tup.getT1();
-               });
-           final Flux<byte[]> actualOut = timeout != null ? out.timeout(timeout) : out;
-           response.sendByteArray(actualOut).subscribe(completionMono);
+               }).doOnRequest(l -> log.trace("Requested: {}", l))
+               .doOnSubscribe(s -> {
+                   MonoProcessor<Void> mp = completionMono;
+                   log.trace("Subscription on Flux<byte[]> occurred: {}", s);
+               })
+               .doFinally(s -> log.trace("Flux<byte[]> closing with signal: {}", s));
+           reactorNettyResponse.sendByteArray(byteFlux).subscribe(completionMono);
            return bytesEmitter.sink();
        };
    }
@@ -91,7 +98,6 @@ public class ChunkOutputStream extends AsyncOutputStream {
        } else {
            byteSink.complete();
        }
-       super.close();
    }
 
    @Override
@@ -108,14 +114,29 @@ public class ChunkOutputStream extends AsyncOutputStream {
 
    @Override
    public void flush() throws IOException {
-       log.trace("Flush called on ChunkOutputStream");
-      super.flush();
+       log.trace("Blocking flush called on ChunkOutputStream");
+       /*
+       log.trace("Blocking flush called on ChunkOutputStream");
+       try {
+           asyncFlush().get();
+       } catch (final InterruptedException ie) {
+           Thread.currentThread().interrupt();
+           throw new RuntimeException(ie);
+       } catch (final ExecutionException ee) {
+           throw new RuntimeException(ee);
+       }
+        */
    }
 
    @Override
-   public CompletionStage<Void> asyncFlush() {
+   public CompletableFuture<Void> asyncFlush() {
       // TODO
-      return CompletableFuture.completedFuture(null);
+       log.trace("Flushing the ChunkOutputStream.");
+       if (!started || byteSink == null) {
+           return CompletableFuture.completedFuture(null);
+       }
+       byteSink.complete();
+       return completionMono.toFuture();
    }
 
     @Override
@@ -123,6 +144,7 @@ public class ChunkOutputStream extends AsyncOutputStream {
         final CompletableFuture<Void> cf = new CompletableFuture<>();
         if (!started) {
             byteSink = byteSinkSupplier.get();
+            parentResponse.committed();
             started = true;
         }
 
@@ -130,11 +152,9 @@ public class ChunkOutputStream extends AsyncOutputStream {
         if (offset != 0 || length != bs.length) {
             bytes = Arrays.copyOfRange(bs, offset, offset + length);
         }
+        log.trace("Sending bytes to the sink");
         byteSink.next(Tuples.of(bytes, cf));
+        //reactorNettyResponse.sendString(Mono.just("ehllo")).subscribe(completionMono);
         return cf;
-   }
-
-   void setTimeout(final Duration timeout) {
-      this.timeout = timeout;
    }
 }

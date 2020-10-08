@@ -1,0 +1,50 @@
+package org.jboss.resteasy.test;
+
+import org.jboss.resteasy.plugins.server.reactor.netty.NettyUtil;
+import org.junit.Assert;
+
+import javax.ws.rs.GET;
+import javax.ws.rs.Path;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+
+@Path("async-io")
+public class AsyncIOResource {
+
+    @GET
+    @Path("blocking-writer-on-io-thread")
+    public BlockingWriterData blockingWriterOnIoThread() {
+        Assert.assertTrue(NettyUtil.isIoThread());
+        return new BlockingWriterData();
+    }
+
+    @GET
+    @Path("async-writer-on-io-thread")
+    public AsyncWriterData asyncWriterOnIoThread() {
+        return new AsyncWriterData(true, false);
+    }
+
+    @GET
+    @Path("slow-async-writer-on-io-thread")
+    public AsyncWriterData slowAsyncWriterOnIoThread() {
+        return new AsyncWriterData(true, true);
+    }
+
+    @GET
+    @Path("blocking-writer-on-worker-thread")
+    public CompletionStage<BlockingWriterData> blockingWriterOnWorkerThread() {
+        return CompletableFuture.supplyAsync(() -> new BlockingWriterData());
+    }
+
+    @GET
+    @Path("async-writer-on-worker-thread")
+    public CompletionStage<AsyncWriterData> asyncWriterOnWorkerThread() {
+        return CompletableFuture.supplyAsync(() -> new AsyncWriterData(false, true));
+    }
+
+    @GET
+    @Path("slow-async-writer-on-worker-thread")
+    public CompletionStage<AsyncWriterData> slowAsyncWriterOnWorkerThread() {
+        return CompletableFuture.supplyAsync(() -> new AsyncWriterData(false, true));
+    }
+}
