@@ -221,10 +221,12 @@ public class ReactorNettyJaxrsServer implements EmbeddedJaxrsServer<ReactorNetty
                    if (isTimeoutSet.get() && Exceptions.unwrap(t) instanceof TimeoutException) {
                       sendMono = resp.status(503).send();
                    } else {
-                      log.error("Unhandled server error", t);
+                      log.error("Unhandled server error.", t);
                       sendMono = resp.status(500).send();
                    }
                    SinkSubscriber.subscribe(completionSink, sendMono);
+                } else {
+                   log.error("Unhandled server error, JAXRS response committed.", t);
                 }
 
                 return completionSink.asMono();
